@@ -1,0 +1,803 @@
+openapi: 3.0.3
+info:
+  title: treefyit
+  version: 0.1.0
+  description: |
+    Tree-based document indexing — 后端 API。
+    上传文档 (.md / .pdf / .html / .zip) 解析为层级树，
+    并提供按点分路径 (`0`, `0.1`, `0.1.2`) 的树检索接口。
+servers:
+  - url: http://localhost:8765
+    description: 本地开发服务
+
+paths:
+  /api/chat:
+    post:
+      summary: 基于已构建的文档树问答（流式）
+      description: |
+        后端会启动一个 `pagent.Agent`，通过 `document_overview / node_children / node_content`
+        三个工具阅读文档树的相关章节，最终返回答案。响应为 `text/event-stream`，每行一条 JSON 事件。
+      operationId: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: |
+            NDJSON 事件流，每行一条 JSON，包含以下类型之一：
+
+            - `start`: 会话开始；`{bid, filename, model}`
+            - `text`: 答案文本增量；`{text}`
+            - `reasoning`: 模型内部思考（若模型支持）；`{text}`
+            - `tool_call`: 模型决定调用某工具；`{id, name, arguments}`
+            - `tool_result`: 工具执行结果；`{id, name, ok, content}`
+            - `done`: 最终答案与用量统计；`{answer, turns, prompt_tokens, completion_tokens, total_tokens}`
+            - `error`: 执行中断错误；`{message}`
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: 一个 NDJSON 事件流；示例见 `components.schemas.ChatEvent`
+        '400':
+          description: 缺少 `bid` 或 `question` 字段
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/build:
+    post:
+      summary: 上传文件并构建文档树
+      description: |
+        支持 `.md` / `.pdf` / `.html` / `.htm` / `.zip`。
+        命中输入内容缓存时直接返回上次结果 (`cached: true`)。
+      operationId: post_build
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BuildRequest'
+      responses:
+        '200':
+          description: 构建结果（成功或失败均返回 200，由 error 字段区分）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildResult'
+
+  /api/build/stream:
+    post:
+      summary: 上传文件并流式构建文档树
+      description: |
+        增量式构建接口。请求参数与 `POST /api/build` 相同，但响应为 NDJSON：
+        每行一条 JSON 事件，前端可用这些事件驱动真实阶段进度。
+        旧的 `POST /api/build` 保持不变。
+      operationId: post_build_stream
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BuildRequest'
+      responses:
+        '200':
+          description: |
+            NDJSON 事件流，常见事件：
+            - `start`: 构建开始
+            - `progress`: 阶段进度，如 parse / structure / refine / summarize / verify
+            - `warning`: 非致命告警
+            - `done`: 构建完成，包含完整 `result`
+            - `error`: 构建失败，包含错误消息和失败 result
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: 每行是一个 `BuildStreamEvent` JSON 对象
+
+  /api/history:
+    get:
+      summary: 按时间倒序的构建记录列表
+      operationId: list_history
+      responses:
+        '200':
+          description: 每个元素与 POST /api/build 的响应一致
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BuildResult'
+
+  /api/build/{bid}:
+    get:
+      summary: 读取某次构建的完整结果
+      operationId: get_build
+      parameters:
+        - name: bid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 构建结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildResult'
+        '404':
+          description: 构建 ID 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      summary: 删除某次构建（内存 + SQLite + 磁盘 JSON + 原件）
+      operationId: delete_build
+      parameters:
+        - name: bid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+
+  /api/build/{bid}/file:
+    get:
+      summary: 获取某次构建的原始上传文件
+      operationId: get_build_file
+      parameters:
+        - name: bid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 原始文件二进制流
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+            text/html:
+              schema:
+                type: string
+                format: binary
+            text/markdown:
+              schema:
+                type: string
+                format: binary
+            text/plain:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: inline; filename="..."
+            Cache-Control:
+              schema:
+                type: string
+              description: private, max-age=300
+            ETag:
+              schema:
+                type: string
+              description: 'sha256-<hash>'
+        '404':
+          description: Build 不存在或原件不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: 原件已被清理
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+
+  /api/trees:
+    get:
+      summary: 列出已注册的 tree_id（与 build id 一致）
+      operationId: list_trees
+      responses:
+        '200':
+          description: 树列表（tree_id + 概要）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TreeRef'
+
+  /api/trees/{tree_id}:
+    get:
+      summary: 某棵树的结构概览（根节点列表）
+      operationId: tree_overview
+      parameters:
+        - name: tree_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 树的结构概览；若 tree_id 未知则为带 error 的对象
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TreeOverview'
+                  - $ref: '#/components/schemas/Error'
+
+  /api/trees/{tree_id}/nodes/{path}:
+    get:
+      summary: inspect 指定路径节点的详细内容
+      operationId: tree_inspect
+      parameters:
+        - name: tree_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: path
+          required: true
+          description: 点分索引路径，例如 `0`、`0.1`、`0.1.2`
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 节点详情；若 tree_id/路径无效则为带 error 的对象
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/NodeDetail'
+                  - $ref: '#/components/schemas/Error'
+
+  /api/trees/{tree_id}/children/{path}:
+    get:
+      summary: 获取指定路径节点的直接子节点
+      operationId: tree_get_children
+      parameters:
+        - name: tree_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 子节点列表；若 tree_id/路径无效则为带 error 的对象
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/NodeChildren'
+                  - $ref: '#/components/schemas/Error'
+
+  /api/queries:
+    get:
+      summary: 最近 200 条工具调用记录
+      operationId: list_queries
+      responses:
+        '200':
+          description: 查询日志（最近在前，最多 200 条）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/QueryRow'
+
+  /api/queries/stats:
+    get:
+      summary: 查询统计（总数 / 按工具 / 按树 / 最近 20 条）
+      operationId: queries_stats
+      responses:
+        '200':
+          description: 统计结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryStats'
+
+  /api/sessions:
+    get:
+      summary: 列出聊天会话
+      operationId: list_sessions
+      parameters:
+        - name: bid
+          in: query
+          required: false
+          schema:
+            type: string
+          description: 按构建 ID 过滤
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+          description: 返回条数上限
+      responses:
+        '200':
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChatSession'
+
+  /api/sessions/{sid}/turns:
+    get:
+      summary: 获取某会话的所有轮次
+      operationId: session_turns
+      parameters:
+        - name: sid
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 会话 ID
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 200
+          description: 返回条数上限
+      responses:
+        '200':
+          description: 轮次列表（按 turn_idx 升序）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session_id, turns]
+                properties:
+                  session_id:
+                    type: string
+                  turns:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChatTurn'
+
+  /api/sessions/{sid}:
+    delete:
+      summary: 删除聊天会话及其所有轮次
+      operationId: delete_session
+      parameters:
+        - name: sid
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 会话 ID
+      responses:
+        '200':
+          description: 删除结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, session_id]
+                properties:
+                  deleted:
+                    type: boolean
+                  session_id:
+                    type: string
+
+components:
+  schemas:
+    ChatRequest:
+      type: object
+      required: [bid, question]
+      properties:
+        bid:
+          type: string
+          description: 构建 ID；来自 `POST /api/build` 的返回值
+        question:
+          type: string
+          description: 向文档提出的问题
+        model:
+          type: string
+          default: deepseek-chat
+          description: 驱动 agent 的模型；格式由底层 pagent/LLM 决定（通常是 OpenAI 兼容的模型名）
+        session_id:
+          type: string
+          description: |
+            可选。若提供，后端会复用该 session 的历史上下文；
+            若省略或 session 不存在，则自动创建新 session。
+            新 session 的 id 会在首个 `start` 事件中返回。
+
+    ChatEvent:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          description: 事件类型，可能值为 start / text / reasoning / tool_call / tool_result / done / error
+        bid:
+          type: string
+        filename:
+          type: string
+        model:
+          type: string
+        session_id:
+          type: string
+          description: 当前对话的 session id；首次提问时由后端自动创建并返回
+        text:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        arguments:
+          type: string
+        ok:
+          type: boolean
+        content:
+          type: string
+        answer:
+          type: string
+        turns:
+          type: integer
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        message:
+          type: string
+
+    BuildRequest:
+      type: object
+      required: [file]
+      properties:
+        file:
+          type: string
+          format: binary
+          description: 上传的文档；支持 .md / .pdf / .html / .htm / .zip
+        model:
+          type: string
+          default: deepseek/deepseek-chat
+          description: 大模型标识；semantic 模式或 summarize=true 时使用
+        mode:
+          type: string
+          default: auto
+          enum: [auto, md, semantic]
+          description: auto=标题+编号；md=纯 Markdown 标题；semantic=LLM 驱动
+        summarize:
+          type: boolean
+          default: true
+          description: 是否为节点生成 LLM 摘要
+
+    BuildStreamEvent:
+      type: object
+      required: [type, bid]
+      properties:
+        type:
+          type: string
+          description: start / progress / warning / done / error
+        bid:
+          type: string
+        stage:
+          type: string
+          description: 当前阶段，如 parse / structure / refine / summarize / verify / done
+        elapsed_sec:
+          type: number
+        message:
+          type: string
+        done:
+          type: integer
+          description: 当前阶段已完成数量
+        total:
+          type: integer
+          description: 当前阶段总数量
+        expanded:
+          type: integer
+          description: refine 阶段已成功展开的大叶子节点数
+        node_count:
+          type: integer
+        result:
+          $ref: '#/components/schemas/BuildResult'
+
+    BuildResult:
+      type: object
+      required: [id, filename, tree, mermaid, stats, created_at]
+      properties:
+        id:
+          type: string
+          description: 构建 ID，由 int(now*1000) 的十六进制前缀生成
+          example: "1902897a3b4c0d1e"
+        filename:
+          type: string
+        content_type:
+          type: string
+          description: MIME type of the original file
+          example: "application/pdf"
+        file_size:
+          type: integer
+          description: Original file size in bytes
+          example: 1234567
+        sha256:
+          type: string
+          description: SHA-256 hash of the original file
+          example: "2f4c...9a"
+        has_original_file:
+          type: boolean
+          description: Whether the original file is persisted
+          default: false
+        original_file_url:
+          type: string
+          nullable: true
+          description: URL to download the original file; null if not available
+          example: "/api/build/1902897a3b4c0d1e/file"
+        raw_text:
+          type: string
+          description: 从文档提取的纯文本；PDF/HTML 会先转成文本
+        mermaid:
+          type: string
+          description: 该树对应的 Mermaid 流程图源码
+        tree:
+          type: array
+          items:
+            $ref: '#/components/schemas/Node'
+        stats:
+          $ref: '#/components/schemas/BuildStats'
+        created_at:
+          type: string
+          description: server-side timestamp in HH MM SS format
+          example: "14:30:05"
+        cached:
+          type: boolean
+          description: 是否命中输入内容缓存；true 表示未重新解析
+          default: false
+        error:
+          type: string
+          description: 仅在失败时出现；消息内容
+
+    Node:
+      type: object
+      description: 文档树的递归节点
+      properties:
+        title:
+          type: string
+        text:
+          type: string
+        summary:
+          type: string
+          description: summarize=false 或该节点未生成摘要时为空字符串
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/Node'
+
+    BuildStats:
+      type: object
+      required: [input_tokens, output_tokens, node_count, elapsed_sec, model, mode]
+      properties:
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        node_count:
+          type: integer
+        elapsed_sec:
+          type: number
+          format: double
+        model:
+          type: string
+        mode:
+          type: string
+          enum: [auto, md, semantic]
+
+    TreeRef:
+      type: object
+      required: [tree_id, node_count, max_depth]
+      properties:
+        tree_id:
+          type: string
+        node_count:
+          type: integer
+        max_depth:
+          type: integer
+
+    TreeOverview:
+      type: object
+      required: [tree_id, node_count, max_depth, roots]
+      properties:
+        tree_id:
+          type: string
+        node_count:
+          type: integer
+        max_depth:
+          type: integer
+        roots:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeSummary'
+
+    NodeSummary:
+      type: object
+      required: [path, title, summary, children_count]
+      properties:
+        path:
+          type: string
+          example: "0.1"
+        title:
+          type: string
+        summary:
+          type: string
+        children_count:
+          type: integer
+
+    NodeDetail:
+      type: object
+      required: [tree_id, path, title, text, summary, children_count, children]
+      properties:
+        tree_id:
+          type: string
+        path:
+          type: string
+        title:
+          type: string
+        text:
+          type: string
+        summary:
+          type: string
+        children_count:
+          type: integer
+        children:
+          type: array
+          items:
+            type: string
+          description: 子节点的点分路径字符串列表
+
+    NodeChildren:
+      type: object
+      required: [tree_id, path, title, children_count, children]
+      properties:
+        tree_id:
+          type: string
+        path:
+          type: string
+        title:
+          type: string
+        children_count:
+          type: integer
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeSummary'
+
+    QueryRow:
+      type: object
+      required: [tool, tree_id, path, summary, timestamp]
+      properties:
+        tool:
+          type: string
+          enum: [overview, inspect, get_children]
+        tree_id:
+          type: string
+        path:
+          type: string
+        summary:
+          type: string
+          description: result-formatted summary string; content depends on tool result shape
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-06-12 14:31:08"
+
+    QueryStats:
+      type: object
+      required: [total, by_tool, by_tree, recent]
+      properties:
+        total:
+          type: integer
+        by_tool:
+          type: object
+          additionalProperties:
+            type: integer
+        by_tree:
+          type: object
+          additionalProperties:
+            type: integer
+        recent:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/QueryRow'
+
+    ChatSession:
+      type: object
+      required: [id, bid, model, turn_count, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          description: 会话 ID，格式为 `s_<random>`
+        bid:
+          type: string
+          description: 关联的构建 ID
+        model:
+          type: string
+          description: 当前使用的模型
+        title:
+          type: string
+          description: 会话标题（取首条用户消息的前 120 字符）
+        turn_count:
+          type: integer
+          description: 已保存的轮次数
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ChatTurn:
+      type: object
+      required: [session_id, turn_idx, role, created_at]
+      properties:
+        session_id:
+          type: string
+        turn_idx:
+          type: integer
+          description: 轮次序号，从 0 开始
+        role:
+          type: string
+          enum: [user, assistant]
+        text:
+          type: string
+          description: 消息文本内容
+        tool_calls:
+          type: string
+          description: JSON 序列化的工具调用数组；assistant 轮次可能包含
+        tool_results:
+          type: string
+          description: JSON 序列化的工具结果数组；assistant 轮次可能包含
+        created_at:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: human readable error message; e.g. not found or unknown tree_id xxx

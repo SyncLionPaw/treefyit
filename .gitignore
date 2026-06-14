@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data (SQLite, caches, uploads, build payloads)
+results/
+
+# Testing & type checking
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tooling
+.trae/
+resources/
