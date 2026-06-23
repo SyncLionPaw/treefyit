@@ -231,6 +231,45 @@ paths:
                 items:
                   $ref: '#/components/schemas/TreeRef'
 
+  /api/forest:
+    get:
+      summary: 林场目录 — 所有已注册文档的概览
+      operationId: forest_catalog
+      responses:
+        '200':
+          description: 文档目录（含根节点预览）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForestCatalog'
+
+  /api/forest/search:
+    get:
+      summary: 跨文档 BM25 搜索（树级 + 节点级）
+      operationId: forest_search
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 搜索关键词
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 8
+            maximum: 20
+          description: 每类结果条数上限
+      responses:
+        '200':
+          description: 树级与节点级命中
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForestSearchResult'
+
   /api/trees/{tree_id}:
     get:
       summary: 某棵树的结构概览（根节点列表）
@@ -635,6 +674,103 @@ components:
           type: integer
         max_depth:
           type: integer
+
+    ForestCatalog:
+      type: object
+      required: [tree_count, trees]
+      properties:
+        tree_count:
+          type: integer
+        trees:
+          type: array
+          items:
+            $ref: '#/components/schemas/ForestTreeEntry'
+
+    ForestTreeEntry:
+      type: object
+      required: [tree_id, filename, node_count, max_depth, roots]
+      properties:
+        tree_id:
+          type: string
+        filename:
+          type: string
+        doc_kind:
+          type: string
+        node_count:
+          type: integer
+        max_depth:
+          type: integer
+        roots:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeSummary'
+
+    ForestSearchResult:
+      type: object
+      required: [trees, sections]
+      properties:
+        trees:
+          $ref: '#/components/schemas/ForestTreeSearch'
+        sections:
+          $ref: '#/components/schemas/ForestSectionSearch'
+
+    ForestTreeSearch:
+      type: object
+      properties:
+        query:
+          type: string
+        error:
+          type: string
+        hits:
+          type: array
+          items:
+            $ref: '#/components/schemas/ForestTreeHit'
+
+    ForestTreeHit:
+      type: object
+      properties:
+        tree_id:
+          type: string
+        filename:
+          type: string
+        doc_kind:
+          type: string
+        score:
+          type: number
+        node_count:
+          type: integer
+        root_titles:
+          type: array
+          items:
+            type: string
+
+    ForestSectionSearch:
+      type: object
+      properties:
+        query:
+          type: string
+        error:
+          type: string
+        hits:
+          type: array
+          items:
+            $ref: '#/components/schemas/ForestSectionHit'
+
+    ForestSectionHit:
+      type: object
+      properties:
+        tree_id:
+          type: string
+        filename:
+          type: string
+        path:
+          type: string
+        title:
+          type: string
+        summary:
+          type: string
+        score:
+          type: number
 
     TreeOverview:
       type: object

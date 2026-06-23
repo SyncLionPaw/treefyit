@@ -14,5 +14,16 @@ Usage::
 """
 
 from src.tools.query import get_children, inspect, list_trees, overview, register, unregister
+from src.tools.forest import find_sections, find_trees, forest_catalog
 
-__all__ = ["register", "unregister", "list_trees", "overview", "inspect", "get_children"]
+__all__ = [
+    "register",
+    "unregister",
+    "list_trees",
+    "overview",
+    "inspect",
+    "get_children",
+    "forest_catalog",
+    "find_trees",
+    "find_sections",
+]

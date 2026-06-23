@@ -152,7 +152,13 @@ def rebuild_history(history: dict[str, dict], register_fn) -> int:
         history[data["id"]] = data
         if data.get("tree"):
             try:
-                register_fn(data["id"], data["tree"])
+                stats = data.get("stats") or {}
+                register_fn(
+                    data["id"],
+                    data["tree"],
+                    filename=data.get("filename", ""),
+                    doc_kind=stats.get("doc_kind", ""),
+                )
             except Exception:  # noqa: BLE001 — best-effort; don't crash startup
                 pass
     return len(history)

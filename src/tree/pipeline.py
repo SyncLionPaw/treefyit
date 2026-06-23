@@ -10,28 +10,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.llm import count_tokens
-from src.parser.md import parse_md
 from src.tree.builder import (
-    AUTO_SEMANTIC_MAX_TOKENS,
     THINNING_THRESHOLD,
     assign_node_ids,
     build_nodes,
     flatten_tree,
-    summarize_tree,
+    summarize_tree as run_summarize,
     thin_tree,
 )
-from src.tree.semantic import (
-    attach_text_ranges,
-    extract_structure,
-    refine_tree_granularity,
-)
+from src.tree.doc_kind import DocKind
+from src.tree.structure import build_tree_structure
 from src.tree.verify import verify_tree
 
 logger = logging.getLogger(__name__)
 
 ProgressFn = Callable[[dict], Awaitable[None]] | None
-
-SEMANTIC_OUTPUT_TOKEN_ESTIMATE = 2000
 
 
 @dataclass(frozen=True)
@@ -48,6 +41,7 @@ class BuildOutput:
     output_tokens: int
     verify_result: dict | None
     semantic_used: bool
+    doc_kind: str
 
 
 def classify_upload(filename: str) -> UploadKind:
@@ -57,6 +51,18 @@ def classify_upload(filename: str) -> UploadKind:
         is_zip=lname.endswith(".zip"),
         is_html=lname.endswith((".html", ".htm")),
     )
+
+
+def decode_text_bytes(raw: bytes) -> str:
+    """Decode plain-text uploads; try UTF-8 first, then GB18030 for legacy Chinese .txt."""
+    if not raw:
+        return ""
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
 def text_from_upload(raw: bytes, filename: str) -> str:
@@ -72,7 +78,14 @@ def text_from_upload(raw: bytes, filename: str) -> str:
             return parse_pdf(tmp_pdf)
         finally:
             Path(tmp_pdf).unlink(missing_ok=True)
-    return raw.decode("utf-8")
+    return decode_text_bytes(raw)
+
+
+def text_from_url(url: str, **kwargs) -> str:
+    """Fetch a remote URL and return Markdown or plain text."""
+    from src.parser.url import parse_url
+
+    return parse_url(url, **kwargs)
 
 
 def temp_upload_file(bid: str, filename: str, *, suffix: str | None = None) -> Path:
@@ -91,7 +104,7 @@ async def build_tree_from_upload(
     bid: str,
     model: str,
     mode: str,
-    summarize_tree: bool,
+    summarize: bool,
     progress: ProgressFn = None,
 ) -> BuildOutput:
     """Build a nested tree from uploaded bytes + extracted text."""
@@ -99,11 +112,15 @@ async def build_tree_from_upload(
     input_tokens = count_tokens(text, model=model)
     output_tokens = 0
     semantic_used = False
+    doc_kind = DocKind.UNSTRUCTURED.value
     skip_thin = kind.is_zip
 
     async def emit(payload: dict) -> None:
         if progress:
             await progress(payload)
+
+    async def semantic_progress(payload: dict) -> None:
+        await emit({"stage": "semantic", **payload})
 
     if kind.is_zip:
         from src.parser.zip import parse_zip
@@ -114,6 +131,7 @@ async def build_tree_from_upload(
             tree = parse_zip(str(tmp), parser=mode)
         finally:
             tmp.unlink(missing_ok=True)
+        doc_kind = DocKind.ZIP.value
     elif kind.is_html:
         from src.parser.html import parse_html
 
@@ -124,72 +142,49 @@ async def build_tree_from_upload(
         finally:
             tmp.unlink(missing_ok=True)
         tree = build_nodes(nodes)
-    elif mode == "semantic":
-        nodes = await extract_structure(text, model=model)
-        attach_text_ranges(nodes, text)
-        tree = build_nodes(nodes)
-        semantic_used = True
-        output_tokens += SEMANTIC_OUTPUT_TOKEN_ESTIMATE
+        doc_kind = DocKind.HTML.value
     else:
-        use_zero_shot = (
-            mode == "auto" and kind.is_pdf and input_tokens <= AUTO_SEMANTIC_MAX_TOKENS
-        )
-        nodes: list[dict] = []
-
-        if use_zero_shot:
+        tmp = temp_upload_file(bid, filename)
+        try:
+            tmp.write_text(text, encoding="utf-8")
             await emit(
                 {
-                    "stage": "semantic_zero_shot",
-                    "message": "short PDF; extracting structure with LLM",
-                    "input_tokens": input_tokens,
+                    "stage": "classify",
+                    "message": "detecting document type",
+                    "mode": mode,
                 }
             )
-            nodes = await extract_structure(text, model=model)
-            attach_text_ranges(nodes, text)
-            semantic_used = True
-            output_tokens += SEMANTIC_OUTPUT_TOKEN_ESTIMATE
-        else:
-            tmp = temp_upload_file(bid, filename)
-            try:
-                tmp.write_text(text, encoding="utf-8")
-                nodes = parse_md(str(tmp))
-            finally:
-                tmp.unlink(missing_ok=True)
-            await emit({"stage": "md_parsed", "nodes": len(nodes)})
-
-        if not nodes and not semantic_used:
+            tree, detected, semantic_used, est = await build_tree_structure(
+                text=text,
+                source_path=tmp,
+                model=model,
+                mode=mode,
+                input_tokens=input_tokens,
+                is_pdf=kind.is_pdf,
+                semantic_progress=semantic_progress,
+            )
+            doc_kind = detected.value
+            output_tokens += est
             await emit(
                 {
-                    "stage": "semantic",
-                    "message": "markdown empty; extracting semantic structure",
+                    "stage": "structure",
+                    "doc_kind": doc_kind,
+                    "semantic_used": semantic_used,
+                    "root_nodes": len(tree),
                 }
             )
-            nodes = await extract_structure(text, model=model)
-            attach_text_ranges(nodes, text)
-            semantic_used = True
-            output_tokens += SEMANTIC_OUTPUT_TOKEN_ESTIMATE
-
-        tree = build_nodes(nodes)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     await emit(
         {
             "stage": "structure_done",
+            "doc_kind": doc_kind,
             "root_nodes": len(tree),
             "node_count": len(flatten_tree(tree)),
             "semantic_used": semantic_used,
         }
     )
-
-    if semantic_used:
-        await emit({"stage": "refine", "message": "splitting large sections"})
-
-        async def refine_progress(payload: dict) -> None:
-            await emit({"stage": "refine", **payload})
-
-        expanded = await refine_tree_granularity(
-            tree, model=model, progress=refine_progress
-        )
-        logger.info("[build] bid=%s semantic refined leaves=%d", bid, expanded)
 
     if not skip_thin:
         await emit({"stage": "thin", "message": "thinning tree"})
@@ -202,13 +197,13 @@ async def build_tree_from_upload(
             }
         )
 
-    if summarize_tree:
+    if summarize:
         await emit({"stage": "summarize", "total": len(flatten_tree(tree))})
 
         async def summarize_progress(payload: dict) -> None:
             await emit({"stage": "summarize", **payload})
 
-        await summarize_tree(tree, model=model, progress=summarize_progress)
+        await run_summarize(tree, model=model, progress=summarize_progress)
         output_tokens += sum(
             count_tokens(n.get("summary", ""), model=model) for n in flatten_tree(tree)
         )
@@ -235,4 +230,5 @@ async def build_tree_from_upload(
         output_tokens=output_tokens,
         verify_result=verify_result,
         semantic_used=semantic_used,
+        doc_kind=doc_kind,
     )

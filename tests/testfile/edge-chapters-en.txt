@@ -1,0 +1,23 @@
+Chapter 1 The Beginning
+
+Once upon a time in a test fixture.
+
+Chapter 2 The Middle
+
+Things happened here.
+
+Chapter 3 The Twist
+
+Unexpected parsing behavior.
+
+Chapter 4 The Build
+
+Nodes become a tree.
+
+Chapter 5 The End
+
+All tests pass.
+
+Chapter 6 Epilogue
+
+Maybe a sequel fixture.

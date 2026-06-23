@@ -87,7 +87,8 @@ n = count_tokens(long_text, model="deepseek/deepseek-chat")
 | `count_tokens(text, model=...)` | `int` | Local estimate via LiteLLM |
 
 Set `OPENAI_API_KEY` (or legacy alias `CHATGPT_API_KEY`) for OpenAI-compatible models.
-Both `chat` and `achat` retry up to 10 times on transient failures and return `""` if all attempts fail.
+Both `chat` and `achat` retry up to 10 times on transient failures and raise
+`LLMError` if all attempts fail.
 
 ## Project layout
 
@@ -289,6 +290,8 @@ openapi.yaml     HTTP API spec (also served at /openapi.yaml)
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/trees` | 列出当前注册过的 tree_id（与 build id 一致） |
+| GET | `/api/forest` | 林场目录：所有已注册文档的概览（含根节点标题） |
+| GET | `/api/forest/search` | 跨文档 BM25 搜索（`q` 查询词，`limit` 条数上限） |
 | GET | `/api/trees/{tree_id}` | 某树的概览（overview） |
 | GET | `/api/trees/{tree_id}/nodes/{path}` | inspect 指定路径节点的详细内容 |
 | GET | `/api/trees/{tree_id}/children/{path}` | 获取指定路径节点的子节点列表 |
@@ -308,6 +311,64 @@ openapi.yaml     HTTP API spec (also served at /openapi.yaml)
   { "tree_id": "1902897a3b4c0d1e", "node_count": 42, "max_depth": 4 },
   "..."
 ]
+```
+
+#### GET /api/forest
+
+- **响应** (`200 application/json`):
+
+```json
+{
+  "tree_count": 2,
+  "trees": [
+    {
+      "tree_id": "1902897a3b4c0d1e",
+      "filename": "paper.pdf",
+      "doc_kind": "structured",
+      "node_count": 42,
+      "max_depth": 4,
+      "roots": [
+        { "path": "0", "title": "1. Introduction", "summary": "...", "children_count": 2 }
+      ]
+    }
+  ]
+}
+```
+
+#### GET /api/forest/search
+
+- **参数**: `q` (string, 必需) 查询词；`limit` (integer, 可选, 默认 8, 最大 20)
+- **响应** (`200 application/json`):
+
+```json
+{
+  "trees": {
+    "query": "白茶",
+    "hits": [
+      {
+        "tree_id": "1902897a3b4c0d1e",
+        "filename": "tea.html",
+        "doc_kind": "html",
+        "score": 1.23,
+        "node_count": 5,
+        "root_titles": ["白茶"]
+      }
+    ]
+  },
+  "sections": {
+    "query": "白茶",
+    "hits": [
+      {
+        "tree_id": "1902897a3b4c0d1e",
+        "filename": "tea.html",
+        "path": "0",
+        "title": "白茶",
+        "summary": "...",
+        "score": 2.1
+      }
+    ]
+  }
+}
 ```
 
 #### GET /api/trees/{tree_id}
@@ -512,7 +573,8 @@ openapi.yaml     HTTP API spec (also served at /openapi.yaml)
 
 - 默认监听 `0.0.0.0:8765`
 - 统一前缀 `/api`；所有响应为 `application/json`
-- 已开启 `CORSMiddleware`，允许任意源、方法、Header
+- CORS 默认允许任意源；生产环境可通过环境变量限制：
+  `TREEFYIT_CORS_ORIGINS=http://localhost:3000,https://app.example.com`
 
 ### 5. OpenAPI / 文档界面
 

@@ -32,6 +32,10 @@ MAX_RETRIES = 10
 RETRY_DELAY = 1.0
 
 
+class LLMError(RuntimeError):
+    """Raised when all LLM retry attempts are exhausted."""
+
+
 def chat(prompt: str, **kwargs: Any) -> str:
     """Send a prompt to the LLM and return the response text.
 
@@ -44,7 +48,10 @@ def chat(prompt: str, **kwargs: Any) -> str:
             max_tokens (int) — output limit
 
     Returns:
-        Response text, or ``""`` if all retries fail.
+        Response text.
+
+    Raises:
+        LLMError: If all retries fail.
     """
     model = str(kwargs.pop("model", "gpt-4o")).removeprefix("litellm/")
     system = kwargs.pop("system", None)
@@ -70,7 +77,7 @@ def chat(prompt: str, **kwargs: Any) -> str:
             logger.warning("chat attempt %d/%d failed for model=%s", i + 1, MAX_RETRIES, model, exc_info=True)
             if i < MAX_RETRIES - 1:
                 time.sleep(RETRY_DELAY)
-    return ""
+    raise LLMError(f"chat failed after {MAX_RETRIES} attempts for model={model}")
 
 
 async def achat(prompt: str, **kwargs: Any) -> str:
@@ -99,7 +106,7 @@ async def achat(prompt: str, **kwargs: Any) -> str:
             logger.warning("achat attempt %d/%d failed for model=%s", i + 1, MAX_RETRIES, model, exc_info=True)
             if i < MAX_RETRIES - 1:
                 await asyncio.sleep(RETRY_DELAY)
-    return ""
+    raise LLMError(f"achat failed after {MAX_RETRIES} attempts for model={model}")
 
 
 def count_tokens(text: str, model: str = "gpt-4o") -> int:

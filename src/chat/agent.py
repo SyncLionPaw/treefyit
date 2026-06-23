@@ -155,6 +155,154 @@ def _tree_tools(build: dict):
     return document_overview, node_children, node_content
 
 
+def _forest_tools(current_bid: str):
+    """Forest catalog + cross-tree navigation tools."""
+
+    from pagent import tool
+    from src.tools import (
+        forest_catalog as _forest_catalog,
+        find_trees as _find_trees,
+        find_sections as _find_sections,
+        overview as _overview,
+        get_children as _get_children,
+        inspect as _inspect,
+    )
+
+    path_re = re.compile(r"^\d+(?:\.\d+)*$")
+
+    @tool()
+    def forest_catalog_tool() -> str:
+        """List every document (tree) in the forest with top-level sections.
+
+        Use this first when the user asks about content that might live in
+        another book, or when you need to see what documents are available.
+        """
+        data = _forest_catalog()
+        lines = [f"forest: {data.get('tree_count', 0)} trees"]
+        for t in data.get("trees", []):
+            tid = t["tree_id"]
+            marker = " (current chat)" if tid == current_bid else ""
+            lines.append(
+                f"- [{tid}] {t.get('filename', tid)}{marker}  "
+                f"({t.get('node_count', 0)} nodes, kind={t.get('doc_kind') or '?'})"
+            )
+            for root in (t.get("roots") or [])[:6]:
+                lines.append(f"    · [{root.get('path')}] {root.get('title', '')}")
+        return "\n".join(lines) if lines else "(empty forest)"
+
+    @tool()
+    def find_trees(query: str, limit: int = 5) -> str:
+        """Find which document(s) match a topic (BM25 over catalog).
+
+        Returns tree_id values — pass one to ``tree_overview`` /
+        ``tree_node_children`` / ``tree_node_content``.
+        """
+        data = _find_trees(query, limit=limit)
+        if data.get("error"):
+            return f"error: {data['error']}"
+        hits = data.get("hits", [])
+        if not hits:
+            return f"no trees matched: {query!r}"
+        lines = [f"trees matching {query!r}:"]
+        for h in hits:
+            roots = ", ".join(h.get("root_titles") or [])[:120]
+            lines.append(
+                f"- [{h['tree_id']}] {h.get('filename')}  score={h.get('score')}  "
+                f"({roots})"
+            )
+        return "\n".join(lines)
+
+    @tool()
+    def find_sections(query: str, limit: int = 8) -> str:
+        """Search all documents for sections matching a topic.
+
+        Returns (tree_id, path) pairs — use ``tree_node_content`` to read one.
+        """
+        data = _find_sections(query, limit=limit)
+        if data.get("error"):
+            return f"error: {data['error']}"
+        hits = data.get("hits", [])
+        if not hits:
+            return f"no sections matched: {query!r}"
+        lines = [f"sections matching {query!r}:"]
+        for h in hits:
+            lines.append(
+                f"- tree={h['tree_id']} path={h['path']}  "
+                f"{h.get('title', '')}  ({h.get('filename')})"
+            )
+            snip = (h.get("snippet") or "").strip()
+            if snip:
+                lines.append(f"    {snip[:160]}")
+        return "\n".join(lines)
+
+    @tool()
+    def tree_overview(tree_id: str) -> str:
+        """Top-level structure of any document in the forest (by tree_id)."""
+        data = _overview(tree_id)
+        if "error" in data:
+            return f"error: {data['error']}"
+        lines = [
+            f"tree: {tree_id}  nodes={data.get('node_count')}  "
+            f"depth={data.get('max_depth')}"
+        ]
+        for node in data.get("roots", []):
+            path = node.get("path", "")
+            title = (node.get("title") or "").strip()
+            cc = node.get("children_count", 0)
+            lines.append(f"- [{path}] {title}  (sub-sections: {cc})")
+            s = (node.get("summary") or "").strip()
+            if s:
+                lines.append(f"    summary: {s[:200]}")
+        return "\n".join(lines)
+
+    @tool()
+    def tree_node_children(tree_id: str, path: str) -> str:
+        """List sub-sections of a node in any tree (numeric dot-path)."""
+        if not path_re.fullmatch(path or ""):
+            return f"error: path must be numeric dot-path like '0' or '0.1' (got {path!r})"
+        data = _get_children(tree_id, path)
+        if "error" in data:
+            return f"error: {data['error']}"
+        parent = (data.get("title") or "").strip() or path
+        children = data.get("children", [])
+        lines = [f"children of [{path}] {parent} in {tree_id}  ({len(children)}):"]
+        for child in children:
+            cp = child.get("path", "")
+            title = (child.get("title") or "").strip()
+            lines.append(
+                f"- [{cp}] {title}  (sub-sections: {child.get('children_count', 0)})"
+            )
+        return "\n".join(lines)
+
+    @tool()
+    def tree_node_content(tree_id: str, path: str) -> str:
+        """Read full text/summary of a section in any tree."""
+        if not path_re.fullmatch(path or ""):
+            return f"error: path must be numeric dot-path like '0' or '0.1' (got {path!r})"
+        data = _inspect(tree_id, path)
+        if "error" in data:
+            return f"error: {data['error']}"
+        title = (data.get("title") or "").strip() or path
+        summary = (data.get("summary") or "").strip()
+        text = (data.get("text") or "").strip()
+        lines = [f"# [{path}] {title}  (tree={tree_id})"]
+        if summary:
+            lines.append("## summary\n" + (summary[:2000] + "…" if len(summary) > 2000 else summary))
+        if text:
+            body = text[:8000] + "\n...(truncated)" if len(text) > 8000 else text
+            lines.append("## text\n" + body)
+        return "\n\n".join(lines) if len(lines) > 1 else lines[0] + "\n(no content)"
+
+    return (
+        forest_catalog_tool,
+        find_trees,
+        find_sections,
+        tree_overview,
+        tree_node_children,
+        tree_node_content,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Agent builder + streamer
 # ---------------------------------------------------------------------------
@@ -201,10 +349,21 @@ async def build_events(
         try:
             from src.tools import register
 
-            register(bid, build["tree"])
+            stats = build.get("stats") or {}
+            register(
+                bid,
+                build["tree"],
+                filename=build.get("filename", ""),
+                doc_kind=stats.get("doc_kind", ""),
+            )
         except Exception as e:  # noqa: BLE001
             logger.info("register failed for %s: %s", bid, e)
             has_tree = False
+
+    from src.tools import list_trees
+
+    all_trees = list_trees()
+    forest_count = len(all_trees)
 
     # --- wire up pagent ---
     try:
@@ -269,57 +428,70 @@ async def build_events(
             }
             return
 
-    tools = list(_tree_tools(build)) if has_tree else []
+    forest_tools = list(_forest_tools(bid)) if forest_count else []
+    tree_tools = list(_tree_tools(build)) if has_tree else []
+    tools = forest_tools + tree_tools
     filename = build.get("filename", bid)
 
     system_prompt = (
         f"You are a helpful assistant chatting with a user who has uploaded the "
-        f"document '{filename}'. "
+        f"document '{filename}' (tree_id={bid}). "
     )
+    if forest_count:
+        system_prompt += (
+            f"The server holds a forest of {forest_count} indexed document(s). "
+            "Use the forest tools to locate the right book before drilling into "
+            "sections:\n"
+            "• forest_catalog_tool() — list all documents and their top-level sections\n"
+            "• find_trees(query) — which book(s) match a topic?\n"
+            "• find_sections(query) — cross-book section search → (tree_id, path)\n"
+            "• tree_overview(tree_id) / tree_node_children(tree_id, path) / "
+            "tree_node_content(tree_id, path) — browse any book by tree_id\n\n"
+        )
     if has_tree:
         system_prompt += (
-            "The document is available to you; you also have three tools to browse it. "
-            "IMPORTANT — when you CALL these tools, pass a numeric dot-path (like "
-            "'0', '0.1', '0.2.1') as the argument — never a title string. "
-            "The tools return titles back to you in their output, so you can still "
-            "refer to sections by title inside your final answer to the user.\n"
-            "1. document_overview() — list of top-level sections with summaries and "
-            "their numeric paths ('0', '1', ...). Use it first.\n"
-            "2. node_children(path) — given a numeric dot-path like '0' or '0.1', "
-            "list its direct sub-sections with their numeric paths (e.g. '0.0', "
-            "'0.1'). Use it to narrow down.\n"
-            "3. node_content(path) — given a numeric dot-path, return the full "
-            "text/summary of that section. Use it once you have pinned down the "
-            "relevant section.\n\n"
+            "The current chat document also has shortcut tools (same tree, no "
+            "tree_id needed):\n"
+            "• document_overview() — top-level sections of the current document\n"
+            "• node_children(path) / node_content(path) — navigate the current document\n"
+            "IMPORTANT — when calling navigation tools, pass numeric dot-paths "
+            "('0', '0.1', …), never title strings.\n\n"
+        )
+    elif forest_count:
+        system_prompt += (
+            "The current document has no parseable tree; use forest tools and "
+            "cross-tree tools (tree_*) to answer from other books.\n\n"
         )
     else:
         system_prompt += (
-            "The document was uploaded but could not be parsed — the document tools "
-            "are NOT available for this build. Answer the user as a general-purpose "
-            "assistant instead of trying to reference the document.\n\n"
+            "No document trees are available. Answer as a general assistant.\n\n"
         )
 
-    system_prompt += (
-        "How to decide whether to use the tools:\n"
-        "- Use the tools when the question is about the document's content, "
-        "structure, or claims (e.g. 'what does section X say?', 'summarize the "
-        "API', 'list the conclusions').\n"
-        "- You MAY answer directly without calling any tool when the question is "
-        "general knowledge, a greeting, small talk, or unrelated to the document.\n"
-        "- When in doubt but the document IS available, call document_overview "
-        "once and then decide.\n\n"
-    )
-
-    if has_tree:
+    if has_tree or forest_count:
         system_prompt += (
-            "Rules for answers that use the document:\n"
-            "- Prefer narrow sections over reading the whole document.\n"
-            "- Quote short passages inside your answer so the user can locate them.\n"
-            "- Do NOT repeat the full content of a section; summarize.\n"
-            "- Do NOT mention section indices or path-like numbers (e.g. '0.1') in "
-            "your answer.  If a section has a numbered title, only quote the number "
-            "that appears in the title itself; do not invent new index numbers.\n"
-            "- If a section is not relevant, try another or tell the user.\n"
+            "Workflow when the question may span multiple books:\n"
+            "1. find_trees or find_sections with the user's topic\n"
+            "2. tree_overview on the best tree_id, then tree_node_children to narrow\n"
+            "3. tree_node_content to read the final section\n"
+            "For questions clearly about the current document only, you may skip "
+            "step 1 and use document_overview directly.\n\n"
+            "How to decide whether to use tools:\n"
+            "- Use tools for questions about document content, structure, or claims.\n"
+            "- Answer directly for general knowledge, greetings, or unrelated topics.\n"
+            "- When in doubt, call forest_catalog_tool or find_trees once.\n\n"
+        )
+    else:
+        system_prompt += (
+            "Answer the user as a general-purpose assistant.\n\n"
+        )
+
+    if has_tree or forest_count:
+        system_prompt += (
+            "Rules for document-based answers:\n"
+            "- Prefer narrow sections over reading whole documents.\n"
+            "- Quote short passages; summarize long ones.\n"
+            "- Do NOT expose internal path numbers (0.1) in the user-facing answer.\n"
+            "- If a section is irrelevant, try another or say so.\n"
         )
 
     system_prompt += "- Answer in the user's language (usually Chinese)."

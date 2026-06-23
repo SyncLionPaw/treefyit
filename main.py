@@ -1,6 +1,7 @@
 """treefyit — one call to parse, summarize, and visualize."""
 
 import argparse
+from pathlib import Path
 
 
 def main():
@@ -29,6 +30,60 @@ def main():
     )
     p_build.add_argument("-o", "--html", default=None, help="Export tree to HTML file")
 
+    # preview — parse only, no LLM
+    p_preview = sub.add_parser(
+        "preview", help="Parse a file and print the tree (no LLM)"
+    )
+    p_preview.add_argument("file", help="Path to Markdown / text file")
+    p_preview.add_argument(
+        "-o", "--html", default=None, help="Export tree to HTML file"
+    )
+    p_preview.add_argument(
+        "-s",
+        "--snippet",
+        type=int,
+        nargs="?",
+        const=48,
+        default=0,
+        metavar="N",
+        help="Append a short body preview (N chars, default 48 when flag is set)",
+    )
+
+    # url — fetch remote page(s), parse tree, no LLM
+    p_url = sub.add_parser("url", help="Fetch a URL and print the tree (no LLM)")
+    p_url.add_argument("url", help="http(s):// link")
+    p_url.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Follow child links (BFS crawl)",
+    )
+    p_url.add_argument(
+        "--depth",
+        type=int,
+        default=2,
+        help="Max crawl depth when --recursive (default: 2)",
+    )
+    p_url.add_argument(
+        "--save",
+        metavar="PATH",
+        default=None,
+        help="Save fetched Markdown/text to a file",
+    )
+    p_url.add_argument(
+        "-s",
+        "--snippet",
+        type=int,
+        nargs="?",
+        const=48,
+        default=0,
+        metavar="N",
+        help="Append a short body preview (N chars, default 48 when flag is set)",
+    )
+    p_url.add_argument(
+        "-o", "--html", default=None, help="Export tree visualization to HTML"
+    )
+
     # serve
     p_serve = sub.add_parser("serve", help="Start the web UI")
     p_serve.add_argument(
@@ -55,6 +110,52 @@ def main():
             mode=args.mode,
             summarize=not args.no_summarize,
         )
+        if args.html:
+            save_html(tree, args.html)
+            print(f"HTML saved to {args.html}")
+
+    elif args.command == "preview":
+        from src.parser.html import parse_html
+        from src.parser.md import parse_md
+        from src.tree.builder import build_nodes
+        from src.vis import save_html, show
+
+        path = args.file.lower()
+        if path.endswith((".html", ".htm")):
+            nodes = parse_html(args.file)
+        else:
+            nodes = parse_md(args.file)
+        tree = build_nodes(nodes)
+        show(tree, max_text=args.snippet)
+        if args.html:
+            save_html(tree, args.html)
+            print(f"HTML saved to {args.html}")
+
+    elif args.command == "url":
+        from src.parser.md import parse_md_text
+        from src.parser.url import is_url, parse_url
+        from src.tree.builder import build_nodes
+        from src.vis import save_html, show
+
+        if not is_url(args.url):
+            raise SystemExit(f"Not a URL: {args.url!r}")
+
+        print(f"Fetching {args.url} ...", flush=True)
+        text = parse_url(
+            args.url,
+            recursive=args.recursive,
+            max_depth=args.depth,
+        )
+        print(f"Fetched {len(text)} chars", flush=True)
+
+        if args.save:
+            Path(args.save).write_text(text, encoding="utf-8")
+            print(f"Saved to {args.save}")
+
+        nodes = parse_md_text(text)
+        print(f"Sections: {len(nodes)}", flush=True)
+        tree = build_nodes(nodes)
+        show(tree, max_text=args.snippet)
         if args.html:
             save_html(tree, args.html)
             print(f"HTML saved to {args.html}")

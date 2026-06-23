@@ -52,6 +52,7 @@ def build_stats(
     model: str,
     mode: str,
     node_count: int,
+    doc_kind: str | None = None,
     verify_result: dict | None = None,
 ) -> dict:
     stats = {
@@ -62,6 +63,8 @@ def build_stats(
         "model": model,
         "mode": mode,
     }
+    if doc_kind:
+        stats["doc_kind"] = doc_kind
     if verify_result:
         stats["verify"] = verify_result
     return stats

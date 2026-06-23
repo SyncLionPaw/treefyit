@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 import time
 from urllib.parse import quote
@@ -43,6 +44,7 @@ for _log_name in (
     "src.parser.pdf",
     "src.parser.md",
     "src.tree.semantic",
+    "src.tree.pipeline",
     "src.chat.agent",
 ):
     _log = logging.getLogger(_log_name)
@@ -52,9 +54,12 @@ for _log_name in (
 
 app = FastAPI(title="treefyit")
 
+_cors_origins = os.getenv("TREEFYIT_CORS_ORIGINS", "*")
+_allow_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()] or ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allow_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -63,14 +68,26 @@ app.add_middleware(
 # ---- Helpers (defined before module-level init) ----------------------------
 
 
-def _register_or_none(tree_id: str, tree: list) -> None:
+def _register_or_none(
+    tree_id: str,
+    tree: list,
+    *,
+    filename: str = "",
+    doc_kind: str = "",
+) -> None:
     """Register a tree with the agent-tools module; don't crash on error."""
     try:
         from src.tools import register
 
-        register(tree_id, tree)
+        if not filename or not doc_kind:
+            build = _store.history.get(tree_id) or _store.load_build(tree_id)
+            if build:
+                filename = filename or build.get("filename", "")
+                stats = build.get("stats") or {}
+                doc_kind = doc_kind or stats.get("doc_kind", "")
+        register(tree_id, tree, filename=filename, doc_kind=doc_kind)
     except Exception:  # noqa: BLE001 — best-effort
-        pass
+        logger.exception("failed to register tree %s", tree_id)
 
 
 # ---- Storage init -----------------------------------------------------------
@@ -116,8 +133,20 @@ async def api_build(
     try:
         text = text_from_upload(raw, filename)
     except Exception as e:
+        elapsed = time.time() - t0
         logger.error("[build] bid=%s parse failed: %s", bid, e, exc_info=True)
-        raise
+        result = error_build_result(
+            bid,
+            filename,
+            str(e),
+            elapsed_sec=elapsed,
+            model=model,
+            mode=mode,
+            file_meta=file_meta,
+        )
+        _store.history[bid] = result
+        _store.save_build(bid, result, None)
+        return result
     logger.info("[build] bid=%s document text ready (%d chars)", bid, len(text))
 
     ck = _store.cache_key_for(text, model, mode, summarize)
@@ -140,7 +169,7 @@ async def api_build(
             bid=bid,
             model=model,
             mode=mode,
-            summarize_tree=summarize,
+            summarize=summarize,
         )
         elapsed = time.time() - t0
         node_count = len(flatten_tree(output.tree))
@@ -151,6 +180,7 @@ async def api_build(
             model=model,
             mode=mode,
             node_count=node_count,
+            doc_kind=output.doc_kind,
             verify_result=output.verify_result,
         )
         if output.verify_result:
@@ -342,7 +372,7 @@ async def _build_stream_events(
                 bid=bid,
                 model=model,
                 mode=mode,
-                summarize_tree=summarize,
+                summarize=summarize,
                 progress=on_progress,
             )
         )
@@ -370,6 +400,7 @@ async def _build_stream_events(
             model=model,
             mode=mode,
             node_count=node_count,
+            doc_kind=output.doc_kind,
             verify_result=output.verify_result,
         )
         result = success_build_result(
@@ -567,6 +598,23 @@ def api_list_trees():
     return list_trees()
 
 
+@app.get("/api/forest")
+def api_forest_catalog():
+    from src.tools import forest_catalog
+
+    return forest_catalog()
+
+
+@app.get("/api/forest/search")
+def api_forest_search(q: str, limit: int = 8):
+    from src.tools import find_sections, find_trees
+
+    return {
+        "trees": find_trees(q, limit=min(limit, 20)),
+        "sections": find_sections(q, limit=min(limit, 20)),
+    }
+
+
 @app.get("/api/trees/{tree_id}")
 def api_overview(tree_id: str):
     from src.tools import overview
@@ -643,16 +691,15 @@ def api_delete_session(sid: str):
 # ---------------------------------------------------------------------------
 
 _OPENAPI_PATH = Path(__file__).resolve().parent.parent.parent / "openapi.yaml"
+_openapi_yaml_cache: bytes | None = None
 
 
 def _openapi_yaml() -> bytes:
     """Load the OpenAPI spec from the project root (cached in memory)."""
-    if not _openapi_yaml_cache["data"]:
-        _openapi_yaml_cache["data"] = _OPENAPI_PATH.read_bytes()
-    return _openapi_yaml_cache["data"]
-
-
-_openapi_yaml_cache: dict = {}
+    global _openapi_yaml_cache
+    if _openapi_yaml_cache is None:
+        _openapi_yaml_cache = _OPENAPI_PATH.read_bytes()
+    return _openapi_yaml_cache
 
 
 @app.get("/openapi.yaml", include_in_schema=False)

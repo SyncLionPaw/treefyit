@@ -24,14 +24,26 @@ __all__ = ["register", "unregister", "list_trees", "overview", "inspect", "get_c
 _registry: dict[str, list[dict]] = {}
 
 
-def register(tree_id: str, tree: list[dict]) -> None:
+def register(
+    tree_id: str,
+    tree: list[dict],
+    *,
+    filename: str = "",
+    doc_kind: str = "",
+) -> None:
     """Store a tree so agents can reference it by *tree_id*."""
     _registry[tree_id] = tree
+    from src.tools.forest import index_tree
+
+    index_tree(tree_id, tree, filename=filename, doc_kind=doc_kind)
 
 
 def unregister(tree_id: str) -> None:
     """Remove a tree from the registry."""
     _registry.pop(tree_id, None)
+    from src.tools.forest import remove_tree
+
+    remove_tree(tree_id)
 
 
 def list_trees() -> list[dict]:

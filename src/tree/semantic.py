@@ -23,7 +23,11 @@ SPLIT_CONCURRENCY = 4
 # ---------------------------------------------------------------------------
 
 
-async def extract_structure(text: str, model: str = "gpt-4o") -> list[dict]:
+async def extract_structure(
+    text: str,
+    model: str = "gpt-4o",
+    progress=None,
+) -> list[dict]:
     """Have the LLM read *text* and extract a hierarchical section list.
 
     Returns a flat list of {title, level, line_num} that can be fed to
@@ -33,15 +37,39 @@ async def extract_structure(text: str, model: str = "gpt-4o") -> list[dict]:
     if not chunks:
         return []
 
-    # First chunk: generate initial structure
-    result = await _extract_init(chunks[0], model=model)
+    total = len(chunks)
+    logger.info(
+        "[semantic] extract_structure start: %d chunks, %d chars",
+        total,
+        len(text),
+    )
 
-    # Subsequent chunks: continue the structure
-    for chunk in chunks[1:]:
+    async def report(done: int, sections: int) -> None:
+        if progress:
+            await progress(
+                {
+                    "done": done,
+                    "total": total,
+                    "sections": sections,
+                    "message": f"LLM structure extraction {done}/{total}",
+                }
+            )
+
+    await report(0, 0)
+
+    result = await _extract_init(chunks[0], model=model)
+    logger.info("[semantic] chunk 1/%d done → %d sections", total, len(result))
+    await report(1, len(result))
+
+    for i, chunk in enumerate(chunks[1:], start=2):
         continuation = await _extract_continue(result, chunk, model=model)
         result.extend(continuation)
+        logger.info("[semantic] chunk %d/%d done → %d sections", i, total, len(result))
+        await report(i, len(result))
 
-    return _parse_structure(result)
+    parsed = _parse_structure(result)
+    logger.info("[semantic] extract_structure done: %d nodes", len(parsed))
+    return parsed
 
 
 def attach_text_ranges(nodes: list[dict], text: str) -> None:
@@ -93,6 +121,7 @@ async def refine_tree_granularity(
     model: str = "gpt-4o",
     min_tokens: int = SPLIT_MIN_TOKENS,
     max_children: int = SPLIT_MAX_CHILDREN,
+    max_leaf_depth: int | None = None,
     progress=None,
 ) -> int:
     """Split oversized leaf nodes into semantic sub-sections with an LLM.
@@ -102,6 +131,9 @@ async def refine_tree_granularity(
     topic shifts inside each large leaf, then anchors those segments back to
     the original text using short quotes supplied by the model.
 
+    When *max_leaf_depth* is set (e.g. ``1`` for 章回体), only leaves at that
+    depth from the root are split — sub-segments are never subdivided again.
+
     Returns the number of leaf nodes that were expanded.
     """
     leaves = [
@@ -109,6 +141,10 @@ async def refine_tree_granularity(
         for node in _walk_nodes(tree)
         if not node.get("children")
         and count_tokens(node.get("text", ""), model=model) >= min_tokens
+        and (
+            max_leaf_depth is None
+            or _node_depth_in_tree(tree, node) == max_leaf_depth
+        )
     ]
     if not leaves:
         if progress:
@@ -146,6 +182,32 @@ def _walk_nodes(nodes: list[dict]):
         yield node
         children = node.get("children") or []
         yield from _walk_nodes(children)
+
+
+def _node_depth_in_tree(tree: list[dict], target: dict) -> int | None:
+    def walk(nodes: list[dict], depth: int) -> int | None:
+        for node in nodes:
+            if node is target:
+                return depth
+            children = node.get("children") or []
+            found = walk(children, depth + 1)
+            if found is not None:
+                return found
+        return None
+
+    return walk(tree, 1)
+
+
+def deepest_leaf_depth(tree: list[dict]) -> int:
+    """Maximum depth among leaf nodes (nodes without children)."""
+    depth = 0
+    for node in _walk_nodes(tree):
+        if node.get("children"):
+            continue
+        node_depth = _node_depth_in_tree(tree, node)
+        if node_depth is not None:
+            depth = max(depth, node_depth)
+    return depth
 
 
 async def _split_leaf_node(

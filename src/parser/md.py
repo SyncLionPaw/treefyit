@@ -1,10 +1,7 @@
 """Markdown parser — extract headers and their text content.
 
-Handles two common cases:
-1. Well-formed MD with ``#`` / ``##`` / ``###`` — uses header level directly.
-2. Flat MD (all ``##``) with numbering like "2.1", "3.1.1" — infers hierarchy
-   from the numbering pattern, which is common in academic papers converted
-   from PDF.
+Heading detection uses ``markdown-it-py`` (CommonMark).  Domain-specific
+post-processing keeps PDF-style numbering inference and plain-text 章回 fallback.
 """
 
 from __future__ import annotations
@@ -12,7 +9,11 @@ from __future__ import annotations
 import logging
 import re
 
+from markdown_it import MarkdownIt
+
 logger = logging.getLogger(__name__)
+
+_MD = MarkdownIt("commonmark")
 
 
 def parse_md(path: str) -> list[dict]:
@@ -20,19 +21,27 @@ def parse_md(path: str) -> list[dict]:
 
     Each node: {"title": str, "level": int, "line_num": int, "text": str}
 
-    Headers inside ```code blocks``` are ignored.
+    Headers inside fenced code blocks are ignored by the Markdown parser.
     Hierarchy is inferred from numbering when header levels are flat.
     """
     logger.info("[md] parse_md %s", path)
     with open(path, encoding="utf-8") as f:
         content = f.read()
+    return parse_md_text(content)
 
+
+def parse_md_text(content: str) -> list[dict]:
+    """Parse Markdown *content* into flat section nodes."""
     lines = content.split("\n")
-    nodes = _extract_headers(lines)
-    logger.info("[md] extracted %d headers", len(nodes))
+    nodes = _extract_markdown_headings(content)
+    logger.info("[md] extracted %d markdown headings", len(nodes))
+
+    if not nodes:
+        nodes = _extract_plaintext_chapters(lines)
+        logger.info("[md] plaintext chapter fallback → %d nodes", len(nodes))
 
     _infer_levels(nodes)
-    level_counts = {}
+    level_counts: dict[int, int] = {}
     for n in nodes:
         level_counts[n["level"]] = level_counts.get(n["level"], 0) + 1
     logger.info("[md] inferred levels: %s", level_counts)
@@ -44,56 +53,74 @@ def parse_md(path: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Header extraction
+# Header extraction (markdown-it-py)
 # ---------------------------------------------------------------------------
 
 
-def _extract_headers(lines: list[str]) -> list[dict]:
-    """Extract all headers (ignoring code blocks).
+def _extract_markdown_headings(text: str) -> list[dict]:
+    """Extract ATX and setext headings via CommonMark token stream."""
+    if not text.strip():
+        return []
 
-    Falls back to common plain-text chapter patterns when no Markdown headers
-    are found — e.g. Chinese novels ("第一回 ..."), English chapters, etc.
-    """
+    tokens = _MD.parse(text)
     nodes: list[dict] = []
-    in_code = False
 
-    for i, raw in enumerate(lines, 1):
-        stripped = raw.strip()
-
-        if stripped.startswith("```"):
-            in_code = not in_code
+    for i, tok in enumerate(tokens):
+        if tok.type != "heading_open":
             continue
 
-        if in_code or not stripped:
-            continue
+        level = int(tok.tag[1])  # h1 … h6
+        line_num = tok.map[0] + 1 if tok.map else 0
 
-        m = re.match(r"^(#{1,6})\s+(.+)$", stripped)
-        if m:
-            nodes.append(
-                {
-                    "title": m.group(2).strip(),
-                    "level": len(m.group(1)),
-                    "line_num": i,
-                }
-            )
+        title = ""
+        if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
+            title = tokens[i + 1].content.strip()
 
-    # Fallback: if no Markdown headers, try plain-text chapter patterns.
-    if not nodes:
-        nodes = _extract_plaintext_chapters(lines)
+        if title:
+            nodes.append({"title": title, "level": level, "line_num": line_num})
 
     return nodes
 
 
-def _extract_plaintext_chapters(lines: list[str]) -> list[dict]:
-    """Extract chapter headings from plain text without Markdown markup.
+_CHAPTER_HUI = re.compile(r"^第.+回\s*.+$")
+_CHAPTER_EN = re.compile(r"^Chapter\s+\d+\b", re.IGNORECASE)
+CHAPTER_NOVEL_MIN = 5
 
-    We intentionally do NOT use hand-written regexes here.  Plain-text
-    documents (e.g. ``.txt`` novels) are handled by the **semantic** pipeline
-    in ``src.tree.semantic`` which calls an LLM to infer structure.  This
-    keeps ``md.py`` focused on Markdown parsing and avoids brittle rules.
-    """
-    logger.info("[md] plaintext file detected; deferring to semantic extraction")
-    return []
+
+def is_chapter_heading(title: str) -> bool:
+    stripped = title.strip()
+    return bool(_CHAPTER_HUI.match(stripped) or _CHAPTER_EN.match(stripped))
+
+
+def looks_like_chapter_novel(
+    nodes: list[dict], *, min_chapters: int = CHAPTER_NOVEL_MIN
+) -> bool:
+    """True when most top-level sections look like 章回 / Chapter headings."""
+    if len(nodes) < min_chapters:
+        return False
+    chapter_count = sum(1 for n in nodes if is_chapter_heading(n.get("title", "")))
+    return chapter_count >= min_chapters and chapter_count >= len(nodes) * 0.5
+
+
+def _extract_plaintext_chapters(lines: list[str]) -> list[dict]:
+    """Extract chapter headings from plain text without Markdown markup."""
+    nodes: list[dict] = []
+    for i, raw in enumerate(lines, 1):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if _CHAPTER_HUI.match(stripped) or _CHAPTER_EN.match(stripped):
+            nodes.append(
+                {
+                    "title": stripped,
+                    "level": 1,
+                    "line_num": i,
+                }
+            )
+
+    if not nodes:
+        logger.info("[md] plaintext file detected; deferring to semantic extraction")
+    return nodes
 
 
 # ---------------------------------------------------------------------------
@@ -107,19 +134,15 @@ def _infer_levels(nodes: list[dict]) -> None:
     Detects numbering like "2.1", "3.1.1" and promotes subsections to deeper
     levels, overriding the markdown header level.
     """
-    # Only act if most numbered headers share the same markdown level
     numbered = [_parse_number(n["title"]) for n in nodes]
     numbered = [n for n in numbered if n is not None]
     if not numbered:
         return
 
-    # Count how many dots in each number
     max_dots = max(len(n) - 1 for n in numbered)
-
     if max_dots == 0:
-        return  # no subsections detected
+        return
 
-    # Determine the base markdown level (the level of "X" without dots)
     base_level: int | None = None
     for node in nodes:
         num = _parse_number(node["title"])
@@ -128,7 +151,6 @@ def _infer_levels(nodes: list[dict]) -> None:
             break
 
     if base_level is None:
-        # Fallback: use the most common level
         from collections import Counter
 
         levels = Counter(n["level"] for n in nodes if _parse_number(n["title"]))
@@ -137,18 +159,11 @@ def _infer_levels(nodes: list[dict]) -> None:
         else:
             return
 
-    # Apply: "X" → base_level, "X.Y" → base_level+1, "X.Y.Z" → base_level+2
     for node in nodes:
         num = _parse_number(node["title"])
         if num:
             node["level"] = base_level + len(num) - 1
 
-    # ------------------------------------------------------------------
-    # Pattern: unnumbered header followed by a run of numbered headers
-    # with the same numbering depth (e.g. "Appendix" → "6 …", "7 …", …).
-    # Promote the unnumbered header so it becomes the parent of the run,
-    # and deepen the run by one level so _build nests them correctly.
-    # ------------------------------------------------------------------
     n = len(nodes)
     i = 0
     while i < n:
@@ -156,8 +171,6 @@ def _infer_levels(nodes: list[dict]) -> None:
             i += 1
             continue
 
-        # Find the run of consecutive single-depth numbered nodes that
-        # follow this unnumbered node and share its current (raw) level.
         j = i + 1
         run_numbers: list[int] = []
         while j < n:
@@ -169,10 +182,6 @@ def _infer_levels(nodes: list[dict]) -> None:
             break
 
         if len(run_numbers) >= 2 and _is_numbered_run_container(nodes[i]["title"]):
-            # Promote this unnumbered header by one level — it becomes
-            # a section container for the run, regardless of whether the
-            # run numbers are strictly consecutive (e.g. "A, B, C" or
-            # "6, 7, 8" both qualify).
             nodes[i]["level"] = nodes[i]["level"] - 1
             for k in range(i + 1, j):
                 nodes[k]["level"] = nodes[k]["level"] + 1
@@ -182,13 +191,7 @@ def _infer_levels(nodes: list[dict]) -> None:
 
 
 def _parse_number(title: str) -> tuple[int, ...] | None:
-    """Extract a hierarchical number from a section title.
-
-    Examples:
-        "2.1 Object Counting" → (2, 1)
-        "3.1.2 Something"     → (3, 1, 2)
-        "Introduction"        → None
-    """
+    """Extract a hierarchical number from a section title."""
     m = re.match(r"^(\d+(?:\.\d+)*)\b", title.strip())
     if not m:
         return None
@@ -196,13 +199,7 @@ def _parse_number(title: str) -> tuple[int, ...] | None:
 
 
 def _is_numbered_run_container(title: str) -> bool:
-    """Return true for unnumbered headings that can own numbered children.
-
-    PDF-to-Markdown often emits all headings at the same ``##`` level.  We only
-    apply the "unnumbered heading owns the following numbered run" heuristic to
-    container-like headings.  Front/back matter such as Abstract must stay as a
-    sibling of ``1. Introduction`` rather than becoming its parent.
-    """
+    """Return true for unnumbered headings that can own numbered children."""
     normalized = re.sub(r"[^a-z]+", " ", title.lower()).strip()
     if not normalized:
         return False
@@ -233,7 +230,7 @@ def _is_numbered_run_container(title: str) -> bool:
 def _fill_text(nodes: list[dict], lines: list[str]) -> None:
     """Assign text content to each node (from its header line to the next header)."""
     for i, node in enumerate(nodes):
-        start = node["line_num"] - 1  # 0-indexed
+        start = node["line_num"] - 1
         if i + 1 < len(nodes):
             end = nodes[i + 1]["line_num"] - 1
         else:

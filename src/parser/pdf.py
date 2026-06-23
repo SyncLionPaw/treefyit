@@ -12,7 +12,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from src.parser.url import is_url
 
 import requests
 
@@ -52,7 +52,7 @@ def parse_pdf(source: str | Path, **kwargs) -> str:
         Markdown text.
     """
     source = str(source)
-    is_remote = _is_url(source)
+    is_remote = is_url(source)
     logger.info(
         "[pdf] parse_pdf source=%s remote=%s token=%s",
         source,
@@ -304,7 +304,3 @@ def _fetch_md_from_zip(zip_url: str) -> str:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _is_url(s: str) -> bool:
-    return urlparse(s).scheme in ("http", "https")

@@ -12,13 +12,11 @@ import logging
 from pathlib import Path
 
 from src.llm import achat, count_tokens
-from src.parser.md import parse_md
 from src.vis.tree_view import show as _show
 
 SUMMARY_THRESHOLD = 200  # tokens: if text is shorter, use text as summary
 THINNING_THRESHOLD = 5000  # tokens: merge children into parent when smaller
 VERIFY_SAMPLE_NODES = 10  # how many nodes to spot-check per build
-AUTO_SEMANTIC_MAX_TOKENS = 40_000
 
 
 def build_tree(
@@ -58,15 +56,18 @@ def build_tree(
             tmp_md = path.with_suffix(".tmp.md")
             tmp_md.write_text(md_text, encoding="utf-8")
             try:
-                use_semantic = mode == "semantic" or (
-                    mode == "auto"
-                    and count_tokens(md_text, model=model) <= AUTO_SEMANTIC_MAX_TOKENS
+                from src.tree.structure import build_tree_structure
+
+                tree, _, _, _ = asyncio.run(
+                    build_tree_structure(
+                        text=md_text,
+                        source_path=tmp_md,
+                        model=model,
+                        mode=mode,
+                        input_tokens=count_tokens(md_text, model=model),
+                        is_pdf=True,
+                    )
                 )
-                if use_semantic:
-                    tree = asyncio.run(_semantic_build(tmp_md, model=model))
-                else:
-                    nodes = parse_md(str(tmp_md))
-                    tree = build_nodes(nodes)
             finally:
                 tmp_md.unlink()
 
@@ -83,18 +84,21 @@ def build_tree(
 
             tree = parse_zip(str(path), parser=mode)
 
-        # Semantic mode
-        elif mode == "semantic":
-            tree = asyncio.run(_semantic_build(path, model=model))
-
-        # Markdown (default) — falls back to semantic extraction when no
-        # Markdown headers are found (common for plain-text .txt files).
+        # Semantic / Markdown / plain text — unified type-aware path
         else:
-            nodes = parse_md(str(path))
-            if not nodes:
-                tree = asyncio.run(_semantic_build(path, model=model))
-            else:
-                tree = build_nodes(nodes)
+            from src.tree.structure import build_tree_structure
+
+            text = path.read_text(encoding="utf-8")
+            tree, _, _, _ = asyncio.run(
+                build_tree_structure(
+                    text=text,
+                    source_path=path,
+                    model=model,
+                    mode=mode,
+                    input_tokens=count_tokens(text, model=model),
+                    is_pdf=False,
+                )
+            )
 
     else:
         tree = build_nodes(source)
@@ -133,27 +137,9 @@ def build_tree(
         from src.tools import register
 
         tree_id = path.stem  # filename without extension
-        register(tree_id, tree)
+        register(tree_id, tree, filename=path.name)
 
-    _show(tree)
-    return tree
-
-
-# ---------------------------------------------------------------------------
-# Semantic build (LLM-driven)
-# ---------------------------------------------------------------------------
-
-
-async def _semantic_build(path: Path, model: str) -> list[dict]:
-    """Use LLM to extract the document hierarchy semantically."""
-    from .semantic import attach_text_ranges, extract_structure, refine_tree_granularity
-
-    text = path.read_text(encoding="utf-8")
-    nodes = await extract_structure(text, model=model)
-    attach_text_ranges(nodes, text)
-    tree = build_nodes(nodes)
-    await refine_tree_granularity(tree, model=model)
-
+    _show(tree, max_text=48 if summarize else 0)
     return tree
 
 
