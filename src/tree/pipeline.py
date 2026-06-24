@@ -19,6 +19,7 @@ from src.tree.builder import (
     thin_tree,
 )
 from src.tree.doc_kind import DocKind
+from src.tree.model import Tree, to_wire_tree
 from src.tree.structure import build_tree_structure
 from src.tree.verify import verify_tree
 
@@ -36,7 +37,7 @@ class UploadKind:
 
 @dataclass
 class BuildOutput:
-    tree: list[dict]
+    tree: Tree
     input_tokens: int
     output_tokens: int
     verify_result: dict | None
@@ -224,8 +225,10 @@ async def build_tree_from_upload(
             logger.warning("[build] bid=%s verify error: %s", bid, exc)
             await emit({"stage": "verify_failed", "message": str(exc)})
 
+    public_tree = to_wire_tree(tree)
+
     return BuildOutput(
-        tree=tree,
+        tree=public_tree,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         verify_result=verify_result,

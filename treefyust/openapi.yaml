@@ -1,0 +1,363 @@
+openapi: 3.0.3
+info:
+  title: treefyust
+  version: 0.1.0
+  description: Rust implementation of the current treefyit typed service.
+servers:
+  - url: http://localhost:8765
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: OK
+  /api/trees:
+    get:
+      summary: List registered trees
+      responses:
+        "200":
+          description: Tree summaries
+    post:
+      summary: Build a tree from text
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BuildTreeRequest"
+      responses:
+        "200":
+          description: Built tree metadata
+  /api/trees/from-file:
+    post:
+      summary: Build a tree from uploaded file
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                summarize:
+                  type: boolean
+                refine_split_threshold:
+                  type: integer
+                  minimum: 1
+                refine_max_parts:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: Built tree metadata
+  /api/build:
+    post:
+      summary: Compatibility build endpoint for text or file upload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BuildTreeRequest"
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                summarize:
+                  type: boolean
+                refine_split_threshold:
+                  type: integer
+                  minimum: 1
+                refine_max_parts:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: Legacy-compatible build metadata
+  /api/build/stream:
+    post:
+      summary: Build a tree from uploaded file and return NDJSON progress events
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                summarize:
+                  type: boolean
+                refine_split_threshold:
+                  type: integer
+                  minimum: 1
+                refine_max_parts:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: NDJSON progress stream
+  /api/history:
+    get:
+      summary: List build history
+      responses:
+        "200":
+          description: Build history without raw text
+  /api/build/{bid}:
+    get:
+      summary: Get build detail and tree
+      parameters:
+        - $ref: "#/components/parameters/BuildId"
+      responses:
+        "200":
+          description: Build detail
+    delete:
+      summary: Delete build, tree, index, and original file
+      parameters:
+        - $ref: "#/components/parameters/BuildId"
+      responses:
+        "200":
+          description: Deleted
+  /api/build/{bid}/file:
+    get:
+      summary: Download original uploaded file
+      parameters:
+        - $ref: "#/components/parameters/BuildId"
+      responses:
+        "200":
+          description: Original file bytes
+  /api/trees/{tree_id}:
+    get:
+      summary: Get tree overview
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+      responses:
+        "200":
+          description: Tree overview
+    delete:
+      summary: Delete tree and index
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+      responses:
+        "200":
+          description: Deleted
+  /api/trees/{tree_id}/index:
+    post:
+      summary: Build or rebuild tree index
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+      responses:
+        "200":
+          description: Index metadata
+  /api/trees/{tree_id}/index/meta:
+    get:
+      summary: Get tree index metadata
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+      responses:
+        "200":
+          description: Index metadata
+  /api/trees/{tree_id}/search/nodes:
+    get:
+      summary: Search nodes in one tree
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Node hits
+  /api/trees/{tree_id}/nodes/{path}:
+    get:
+      summary: Get node detail by path
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+        - $ref: "#/components/parameters/Path"
+      responses:
+        "200":
+          description: Node detail
+  /api/trees/{tree_id}/children/{path}:
+    get:
+      summary: Get node children by path
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+        - $ref: "#/components/parameters/Path"
+      responses:
+        "200":
+          description: Node children
+  /api/forest:
+    get:
+      summary: Get default forest summary
+      responses:
+        "200":
+          description: Forest summary
+  /api/forest/search/trees:
+    get:
+      summary: Search trees in default forest
+      parameters:
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Tree hits
+  /api/forest/search/nodes:
+    get:
+      summary: Search nodes in default forest
+      parameters:
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Node hits
+  /api/forest/search:
+    get:
+      summary: Compatibility forest search returning tree and section hits
+      parameters:
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Combined tree and section hits
+  /api/queries:
+    get:
+      summary: List recent query/tool calls
+      responses:
+        "200":
+          description: Query log
+  /api/queries/stats:
+    get:
+      summary: Get query/tool usage statistics
+      responses:
+        "200":
+          description: Query statistics
+  /api/chat:
+    post:
+      summary: Stream a retrieval-grounded chat response
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: NDJSON event stream
+  /api/sessions:
+    get:
+      summary: List chat sessions
+      parameters:
+        - name: bid
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Chat sessions
+  /api/sessions/{sid}/turns:
+    get:
+      summary: List chat session turns
+      parameters:
+        - name: sid
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Chat turns
+  /api/sessions/{sid}:
+    delete:
+      summary: Delete one chat session
+      parameters:
+        - name: sid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+components:
+  parameters:
+    BuildId:
+      name: bid
+      in: path
+      required: true
+      schema:
+        type: string
+    TreeId:
+      name: tree_id
+      in: path
+      required: true
+      schema:
+        type: string
+    Path:
+      name: path
+      in: path
+      required: true
+      schema:
+        type: string
+    Q:
+      name: q
+      in: query
+      required: true
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+  schemas:
+    BuildTreeRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+        filename:
+          type: string
+        summarize:
+          type: boolean
+        refine_split_threshold:
+          type: integer
+        refine_max_parts:
+          type: integer
+    ChatRequest:
+      type: object
+      properties:
+        bid:
+          type: string
+        tree_id:
+          type: string
+        question:
+          type: string
+        model:
+          type: string
+        session_id:
+          type: string

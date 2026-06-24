@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 
 from src.llm import achat, count_tokens
+from src.tree.model import FlatNode, Tree, TreeNode, to_wire_tree
 from src.vis.tree_view import show as _show
 
 SUMMARY_THRESHOLD = 200  # tokens: if text is shorter, use text as summary
@@ -20,13 +21,13 @@ VERIFY_SAMPLE_NODES = 10  # how many nodes to spot-check per build
 
 
 def build_tree(
-    source: str | Path | list[dict],
+    source: str | Path | list[FlatNode],
     *,
     model: str = "gpt-4o",
     summarize: bool = True,
     mode: str = "auto",
     **kwargs,
-) -> list[dict]:
+) -> Tree:
     """Build a nested tree from a Markdown or PDF file.
 
     Args:
@@ -132,15 +133,17 @@ def build_tree(
     if summarize:
         asyncio.run(summarize_tree(tree, model=model))
 
+    public_tree = to_wire_tree(tree)
+
     # Auto-register so agents can find it
     if path:
         from src.tools import register
 
         tree_id = path.stem  # filename without extension
-        register(tree_id, tree, filename=path.name)
+        register(tree_id, public_tree, filename=path.name)
 
-    _show(tree, max_text=48 if summarize else 0)
-    return tree
+    _show(public_tree, max_text=48 if summarize else 0)
+    return public_tree
 
 
 # ---------------------------------------------------------------------------
@@ -148,9 +151,9 @@ def build_tree(
 # ---------------------------------------------------------------------------
 
 
-def build_nodes(nodes: list[dict]) -> list[dict]:
-    stack: list[tuple[dict, int]] = []
-    roots: list[dict] = []
+def build_nodes(nodes: list[FlatNode]) -> Tree:
+    stack: list[tuple[TreeNode, int]] = []
+    roots: Tree = []
 
     for node in nodes:
         tree_node = {
@@ -175,7 +178,7 @@ def build_nodes(nodes: list[dict]) -> list[dict]:
     return roots
 
 
-def _clean(nodes: list[dict]) -> None:
+def _clean(nodes: Tree) -> None:
     for node in nodes:
         if not node["children"]:
             del node["children"]
@@ -189,7 +192,7 @@ def _clean(nodes: list[dict]) -> None:
 
 
 def thin_tree(
-    nodes: list[dict], threshold: int = THINNING_THRESHOLD, model: str | None = None
+    nodes: Tree, threshold: int = THINNING_THRESHOLD, model: str | None = None
 ) -> None:
     """Post-order traversal: merge small subtrees into their parent.
 
@@ -232,7 +235,7 @@ def thin_tree(
         i -= 1
 
 
-def _node_total_text(node: dict) -> str:
+def _node_total_text(node: TreeNode) -> str:
     """Return the full text of a node including all descendants."""
     parts = [node.get("text", "")]
     for child in node.get("children", []):
@@ -245,7 +248,7 @@ def _node_total_text(node: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def assign_node_ids(nodes: list[dict], counter: int = 1) -> int:
+def assign_node_ids(nodes: Tree, counter: int = 1) -> int:
     """Assign sequential 4-digit node_ids to every node.  Returns next counter."""
     for node in nodes:
         node["node_id"] = str(counter).zfill(4)
@@ -260,7 +263,7 @@ def assign_node_ids(nodes: list[dict], counter: int = 1) -> int:
 # ---------------------------------------------------------------------------
 
 
-async def summarize_tree(tree: list[dict], model: str, progress=None) -> None:
+async def summarize_tree(tree: Tree, model: str, progress=None) -> None:
     """Generate summaries for all nodes concurrently."""
     nodes = flatten_tree(tree)
     if not nodes:
@@ -277,7 +280,7 @@ async def summarize_tree(tree: list[dict], model: str, progress=None) -> None:
             await progress({"done": done, "total": len(nodes)})
 
 
-async def _summarize_one(node: dict, model: str) -> None:
+async def _summarize_one(node: TreeNode, model: str) -> None:
     if node.get("summary"):
         return
 
@@ -299,8 +302,8 @@ async def _summarize_one(node: dict, model: str) -> None:
     node["summary"] = resp.strip()
 
 
-def flatten_tree(tree: list[dict]) -> list[dict]:
-    result: list[dict] = []
+def flatten_tree(tree: Tree) -> list[TreeNode]:
+    result: list[TreeNode] = []
     for node in tree:
         result.append(node)
         if "children" in node:

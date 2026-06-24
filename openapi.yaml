@@ -1,809 +1,940 @@
 openapi: 3.0.3
 info:
-  title: treefyit
+  title: treefyit.server
   version: 0.1.0
   description: |
-    Tree-based document indexing — 后端 API。
-    上传文档 (.md / .pdf / .html / .zip) 解析为层级树，
-    并提供按点分路径 (`0`, `0.1`, `0.1.2`) 的树检索接口。
+    `treefyit/` 新服务接口规范。
+
+    这份规范只描述 `treefyit.server` 当前已经实现的接口：
+    - 单树构建、索引、查询、浏览、删除
+    - 默认 forest 概览与搜索
+    - JSON 文件 store 自动恢复
+
+    兼容别名路径（例如 `/api/build`、`/api/tree/...`）也已保留。
 servers:
   - url: http://localhost:8765
-    description: 本地开发服务
+    description: Local development server
+
+tags:
+  - name: health
+  - name: trees
+  - name: index
+  - name: search
+  - name: forest
+  - name: app
+  - name: chat
 
 paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Health check
+      operationId: health
+      responses:
+        "200":
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                service: treefyit
+
+  /api/trees:
+    get:
+      tags: [trees]
+      summary: List registered trees
+      operationId: listTrees
+      responses:
+        "200":
+          description: Tree summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TreeSummary"
+              example:
+                - tree_id: a1b2c3
+                  title: intro.md
+                  node_count: 3
+                  max_depth: 2
+                  root_count: 1
+    post:
+      tags: [trees]
+      summary: Build a tree from text
+      operationId: createTreeFromText
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BuildTreeRequest"
+            example:
+              text: "# Intro\n\nHello world.\n\n## Detail\n\nMore text."
+              filename: sample.md
+              summarize: false
+              refine_split_threshold: 400
+              refine_max_parts: 4
+      responses:
+        "200":
+          description: Built tree summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TreeBuildResponse"
+              example:
+                tree_id: a1b2c3
+                filename: sample.md
+                title: sample.md
+                node_count: 3
+                max_depth: 2
+                root_count: 1
+                roots:
+                  - path: "0"
+                    title: Intro
+                    summary: null
+                    children_count: 1
+
+  /api/trees/from-file:
+    post:
+      tags: [trees]
+      summary: Build a tree from file upload
+      operationId: createTreeFromFile
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                summarize:
+                  type: boolean
+                  default: false
+                refine_split_threshold:
+                  type: integer
+                  minimum: 1
+                refine_max_parts:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: Built tree summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TreeBuildResponse"
+
+  /api/build:
+    post:
+      tags: [trees]
+      summary: Compatibility alias for tree build
+      description: |
+        兼容旧路径。
+        - `application/json` 等价于 `POST /api/trees`
+        - `multipart/form-data` 等价于 `POST /api/trees/from-file`
+      operationId: buildCompat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BuildTreeRequest"
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                summarize:
+                  type: boolean
+                refine_split_threshold:
+                  type: integer
+                  minimum: 1
+                refine_max_parts:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: Built tree summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TreeBuildResponse"
+        "415":
+          description: Unsupported content type
+
+  /api/build/stream:
+    post:
+      tags: [app]
+      summary: Build a tree from file upload and stream NDJSON progress
+      operationId: buildStream
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                summarize:
+                  type: boolean
+                  default: false
+                refine_split_threshold:
+                  type: integer
+                  minimum: 1
+                refine_max_parts:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: NDJSON progress events ending with done or error
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+
+  /api/history:
+    get:
+      tags: [app]
+      summary: List build history
+      operationId: listHistory
+      responses:
+        "200":
+          description: Build history without raw text
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BuildHistoryItem"
+
+  /api/build/{bid}:
+    get:
+      tags: [app]
+      summary: Get one build record and tree
+      operationId: getBuild
+      parameters:
+        - $ref: "#/components/parameters/BuildId"
+      responses:
+        "200":
+          description: Build record
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [app]
+      summary: Delete one build, tree, index, and original file
+      operationId: deleteBuild
+      parameters:
+        - $ref: "#/components/parameters/BuildId"
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, id]
+                properties:
+                  ok:
+                    type: boolean
+                  id:
+                    type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/build/{bid}/file:
+    get:
+      tags: [app]
+      summary: Download original uploaded file for one build
+      operationId: getBuildFile
+      parameters:
+        - $ref: "#/components/parameters/BuildId"
+      responses:
+        "200":
+          description: Original file bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/trees/{tree_id}:
+    get:
+      tags: [trees]
+      summary: Get one tree overview
+      operationId: getTreeOverview
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+      responses:
+        "200":
+          description: Tree overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TreeOverview"
+              example:
+                tree_id: a1b2c3
+                title: sample.md
+                node_count: 3
+                max_depth: 2
+                root_count: 1
+                roots:
+                  - path: "0"
+                    title: Intro
+                    summary: null
+                    children_count: 1
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [trees]
+      summary: Delete one tree and its index
+      operationId: deleteTree
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteTreeResponse"
+              example:
+                ok: true
+                tree_id: a1b2c3
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/trees/{tree_id}/index:
+    post:
+      tags: [index]
+      summary: Build or rebuild tree index
+      operationId: createTreeIndex
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+      responses:
+        "200":
+          description: Index summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TreeIndexMeta"
+              example:
+                tree_id: a1b2c3
+                tree_title: sample.md
+                document_count: 3
+                average_document_length: 6.0
+                term_count: 12
+                tree_document_length: 18
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/trees/{tree_id}/index/meta:
+    get:
+      tags: [index]
+      summary: Get tree index summary
+      operationId: getTreeIndexMeta
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+      responses:
+        "200":
+          description: Index summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TreeIndexMeta"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/trees/{tree_id}/search/nodes:
+    get:
+      tags: [search]
+      summary: Search nodes inside one tree
+      operationId: searchTreeNodes
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/LimitNode"
+      responses:
+        "200":
+          description: Ranked node hits
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NodeQueryHit"
+              example:
+                - tree_id: a1b2c3
+                  tree_title: sample.md
+                  node_id: node-2
+                  path: "0.0"
+                  title: Detail
+                  score: 1.42
+                  summary: null
+                  snippet: More text.
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/trees/{tree_id}/nodes/{path}:
+    get:
+      tags: [trees]
+      summary: Get one node by dotted path
+      operationId: getTreeNode
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+        - $ref: "#/components/parameters/Path"
+      responses:
+        "200":
+          description: Node detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeDetail"
+              example:
+                tree_id: a1b2c3
+                path: "0"
+                title: Intro
+                summary: null
+                text: Hello world.
+                children_count: 1
+                children: ["0.0"]
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/trees/{tree_id}/children/{path}:
+    get:
+      tags: [trees]
+      summary: List child nodes under one path
+      operationId: getTreeChildren
+      parameters:
+        - $ref: "#/components/parameters/TreeId"
+        - $ref: "#/components/parameters/Path"
+      responses:
+        "200":
+          description: Child node previews
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeChildren"
+              example:
+                tree_id: a1b2c3
+                path: "0"
+                children:
+                  - path: "0.0"
+                    title: Detail
+                    summary: null
+                    children_count: 0
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/forest:
+    get:
+      tags: [forest]
+      summary: Get default forest summary
+      operationId: getForest
+      responses:
+        "200":
+          description: Forest summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForestSummary"
+              example:
+                forest_id: default
+                tree_count: 2
+                trees:
+                  - tree_id: a1
+                    title: first.md
+                    node_count: 2
+                    max_depth: 1
+                    root_count: 1
+                  - tree_id: b2
+                    title: second.md
+                    node_count: 1
+                    max_depth: 0
+                    root_count: 0
+
+  /api/forest/search/trees:
+    get:
+      tags: [forest]
+      summary: Search trees in default forest
+      operationId: searchForestTrees
+      parameters:
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/LimitTree"
+      responses:
+        "200":
+          description: Ranked tree hits
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TreeQueryHit"
+
+  /api/forest/search/nodes:
+    get:
+      tags: [forest]
+      summary: Search nodes across default forest
+      operationId: searchForestNodes
+      parameters:
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/LimitNode"
+      responses:
+        "200":
+          description: Ranked node hits
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NodeQueryHit"
+
+  /api/forest/search:
+    get:
+      tags: [forest]
+      summary: Compatibility forest search returning tree and node hits
+      operationId: searchForestCompat
+      parameters:
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/LimitNode"
+      responses:
+        "200":
+          description: Combined forest search result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [trees, sections]
+                properties:
+                  trees:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TreeQueryHit"
+                  sections:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/NodeQueryHit"
+
+  /api/queries:
+    get:
+      tags: [app]
+      summary: List recent query/tool calls
+      operationId: listQueries
+      responses:
+        "200":
+          description: Recent query log
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/queries/stats:
+    get:
+      tags: [app]
+      summary: Get query/tool usage statistics
+      operationId: queryStats
+      responses:
+        "200":
+          description: Query statistics
+          content:
+            application/json:
+              schema:
+                type: object
+
   /api/chat:
     post:
-      summary: 基于已构建的文档树问答（流式）
-      description: |
-        后端会启动一个 `pagent.Agent`，通过 `document_overview / node_children / node_content`
-        三个工具阅读文档树的相关章节，最终返回答案。响应为 `text/event-stream`，每行一条 JSON 事件。
+      tags: [chat]
+      summary: Stream a retrieval-grounded chat response for one tree
       operationId: chat
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ChatRequest'
+              $ref: "#/components/schemas/ChatRequest"
       responses:
-        '200':
-          description: |
-            NDJSON 事件流，每行一条 JSON，包含以下类型之一：
-
-            - `start`: 会话开始；`{bid, filename, model}`
-            - `text`: 答案文本增量；`{text}`
-            - `reasoning`: 模型内部思考（若模型支持）；`{text}`
-            - `tool_call`: 模型决定调用某工具；`{id, name, arguments}`
-            - `tool_result`: 工具执行结果；`{id, name, ok, content}`
-            - `done`: 最终答案与用量统计；`{answer, turns, prompt_tokens, completion_tokens, total_tokens}`
-            - `error`: 执行中断错误；`{message}`
+        "200":
+          description: NDJSON event stream
           content:
             text/event-stream:
               schema:
                 type: string
-                description: 一个 NDJSON 事件流；示例见 `components.schemas.ChatEvent`
-        '400':
-          description: 缺少 `bid` 或 `question` 字段
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /api/build:
-    post:
-      summary: 上传文件并构建文档树
-      description: |
-        支持 `.md` / `.pdf` / `.html` / `.htm` / `.zip`。
-        命中输入内容缓存时直接返回上次结果 (`cached: true`)。
-      operationId: post_build
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/BuildRequest'
-      responses:
-        '200':
-          description: 构建结果（成功或失败均返回 200，由 error 字段区分）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BuildResult'
-
-  /api/build/stream:
-    post:
-      summary: 上传文件并流式构建文档树
-      description: |
-        增量式构建接口。请求参数与 `POST /api/build` 相同，但响应为 NDJSON：
-        每行一条 JSON 事件，前端可用这些事件驱动真实阶段进度。
-        旧的 `POST /api/build` 保持不变。
-      operationId: post_build_stream
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/BuildRequest'
-      responses:
-        '200':
-          description: |
-            NDJSON 事件流，常见事件：
-            - `start`: 构建开始
-            - `progress`: 阶段进度，如 parse / structure / refine / summarize / verify
-            - `warning`: 非致命告警
-            - `done`: 构建完成，包含完整 `result`
-            - `error`: 构建失败，包含错误消息和失败 result
-          content:
-            application/x-ndjson:
-              schema:
-                type: string
-                description: 每行是一个 `BuildStreamEvent` JSON 对象
-
-  /api/history:
-    get:
-      summary: 按时间倒序的构建记录列表
-      operationId: list_history
-      responses:
-        '200':
-          description: 每个元素与 POST /api/build 的响应一致
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/BuildResult'
-
-  /api/build/{bid}:
-    get:
-      summary: 读取某次构建的完整结果
-      operationId: get_build
-      parameters:
-        - name: bid
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 构建结果
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BuildResult'
-        '404':
-          description: 构建 ID 不存在
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-    delete:
-      summary: 删除某次构建（内存 + SQLite + 磁盘 JSON + 原件）
-      operationId: delete_build
-      parameters:
-        - name: bid
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 删除成功
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [ok]
-
-  /api/build/{bid}/file:
-    get:
-      summary: 获取某次构建的原始上传文件
-      operationId: get_build_file
-      parameters:
-        - name: bid
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 原始文件二进制流
-          content:
-            application/pdf:
-              schema:
-                type: string
-                format: binary
-            text/html:
-              schema:
-                type: string
-                format: binary
-            text/markdown:
-              schema:
-                type: string
-                format: binary
-            text/plain:
-              schema:
-                type: string
-                format: binary
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-          headers:
-            Content-Disposition:
-              schema:
-                type: string
-              description: inline; filename="..."
-            Cache-Control:
-              schema:
-                type: string
-              description: private, max-age=300
-            ETag:
-              schema:
-                type: string
-              description: 'sha256-<hash>'
-        '404':
-          description: Build 不存在或原件不可用
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '410':
-          description: 原件已被清理
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-
-  /api/trees:
-    get:
-      summary: 列出已注册的 tree_id（与 build id 一致）
-      operationId: list_trees
-      responses:
-        '200':
-          description: 树列表（tree_id + 概要）
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/TreeRef'
-
-  /api/forest:
-    get:
-      summary: 林场目录 — 所有已注册文档的概览
-      operationId: forest_catalog
-      responses:
-        '200':
-          description: 文档目录（含根节点预览）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ForestCatalog'
-
-  /api/forest/search:
-    get:
-      summary: 跨文档 BM25 搜索（树级 + 节点级）
-      operationId: forest_search
-      parameters:
-        - name: q
-          in: query
-          required: true
-          schema:
-            type: string
-          description: 搜索关键词
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
-            default: 8
-            maximum: 20
-          description: 每类结果条数上限
-      responses:
-        '200':
-          description: 树级与节点级命中
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ForestSearchResult'
-
-  /api/trees/{tree_id}:
-    get:
-      summary: 某棵树的结构概览（根节点列表）
-      operationId: tree_overview
-      parameters:
-        - name: tree_id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 树的结构概览；若 tree_id 未知则为带 error 的对象
-          content:
-            application/json:
-              schema:
-                oneOf:
-                  - $ref: '#/components/schemas/TreeOverview'
-                  - $ref: '#/components/schemas/Error'
-
-  /api/trees/{tree_id}/nodes/{path}:
-    get:
-      summary: inspect 指定路径节点的详细内容
-      operationId: tree_inspect
-      parameters:
-        - name: tree_id
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: path
-          in: path
-          required: true
-          description: 点分索引路径，例如 `0`、`0.1`、`0.1.2`
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 节点详情；若 tree_id/路径无效则为带 error 的对象
-          content:
-            application/json:
-              schema:
-                oneOf:
-                  - $ref: '#/components/schemas/NodeDetail'
-                  - $ref: '#/components/schemas/Error'
-
-  /api/trees/{tree_id}/children/{path}:
-    get:
-      summary: 获取指定路径节点的直接子节点
-      operationId: tree_get_children
-      parameters:
-        - name: tree_id
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: path
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 子节点列表；若 tree_id/路径无效则为带 error 的对象
-          content:
-            application/json:
-              schema:
-                oneOf:
-                  - $ref: '#/components/schemas/NodeChildren'
-                  - $ref: '#/components/schemas/Error'
-
-  /api/queries:
-    get:
-      summary: 最近 200 条工具调用记录
-      operationId: list_queries
-      responses:
-        '200':
-          description: 查询日志（最近在前，最多 200 条）
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/QueryRow'
-
-  /api/queries/stats:
-    get:
-      summary: 查询统计（总数 / 按工具 / 按树 / 最近 20 条）
-      operationId: queries_stats
-      responses:
-        '200':
-          description: 统计结果
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/QueryStats'
+        "400":
+          description: Missing bid or tree_id
 
   /api/sessions:
     get:
-      summary: 列出聊天会话
-      operationId: list_sessions
+      tags: [chat]
+      summary: List chat sessions
+      operationId: listSessions
       parameters:
         - name: bid
           in: query
           required: false
           schema:
             type: string
-          description: 按构建 ID 过滤
         - name: limit
           in: query
           required: false
           schema:
             type: integer
+            minimum: 1
             default: 100
-          description: 返回条数上限
       responses:
-        '200':
-          description: 会话列表
+        "200":
+          description: Chat sessions
           content:
             application/json:
               schema:
                 type: object
-                required: [sessions]
-                properties:
-                  sessions:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ChatSession'
 
   /api/sessions/{sid}/turns:
     get:
-      summary: 获取某会话的所有轮次
-      operationId: session_turns
+      tags: [chat]
+      summary: List chat session turns
+      operationId: sessionTurns
       parameters:
         - name: sid
           in: path
           required: true
           schema:
             type: string
-          description: 会话 ID
         - name: limit
           in: query
           required: false
           schema:
             type: integer
+            minimum: 1
             default: 200
-          description: 返回条数上限
       responses:
-        '200':
-          description: 轮次列表（按 turn_idx 升序）
+        "200":
+          description: Session turns
           content:
             application/json:
               schema:
                 type: object
-                required: [session_id, turns]
-                properties:
-                  session_id:
-                    type: string
-                  turns:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ChatTurn'
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/sessions/{sid}:
     delete:
-      summary: 删除聊天会话及其所有轮次
-      operationId: delete_session
+      tags: [chat]
+      summary: Delete one chat session
+      operationId: deleteSession
       parameters:
         - name: sid
           in: path
           required: true
           schema:
             type: string
-          description: 会话 ID
       responses:
-        '200':
-          description: 删除结果
+        "200":
+          description: Deleted
           content:
             application/json:
               schema:
                 type: object
-                required: [deleted, session_id]
-                properties:
-                  deleted:
-                    type: boolean
-                  session_id:
-                    type: string
 
 components:
-  schemas:
-    ChatRequest:
-      type: object
-      required: [bid, question]
-      properties:
-        bid:
-          type: string
-          description: 构建 ID；来自 `POST /api/build` 的返回值
-        question:
-          type: string
-          description: 向文档提出的问题
-        model:
-          type: string
-          default: deepseek-chat
-          description: 驱动 agent 的模型；格式由底层 pagent/LLM 决定（通常是 OpenAI 兼容的模型名）
-        session_id:
-          type: string
-          description: |
-            可选。若提供，后端会复用该 session 的历史上下文；
-            若省略或 session 不存在，则自动创建新 session。
-            新 session 的 id 会在首个 `start` 事件中返回。
+  parameters:
+    BuildId:
+      name: bid
+      in: path
+      required: true
+      schema:
+        type: string
+    TreeId:
+      name: tree_id
+      in: path
+      required: true
+      schema:
+        type: string
+    Path:
+      name: path
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Dot path such as `root`, `0`, `0.0`
+    Q:
+      name: q
+      in: query
+      required: true
+      schema:
+        type: string
+    LimitNode:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 8
+    LimitTree:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 5
 
-    ChatEvent:
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+          example:
+              detail: "unknown tree_id: missing"
+
+  schemas:
+    HealthResponse:
       type: object
-      required: [type]
+      required: [status, service]
       properties:
-        type:
+        status:
           type: string
-          description: 事件类型，可能值为 start / text / reasoning / tool_call / tool_result / done / error
-        bid:
+        service:
           type: string
-        filename:
+
+    ErrorDetail:
+      type: object
+      required: [detail]
+      properties:
+        detail:
           type: string
-        model:
-          type: string
-        session_id:
-          type: string
-          description: 当前对话的 session id；首次提问时由后端自动创建并返回
+
+    BuildTreeRequest:
+      type: object
+      required: [text]
+      properties:
         text:
           type: string
-        id:
-          type: string
-        name:
-          type: string
-        arguments:
-          type: string
-        ok:
-          type: boolean
-        content:
-          type: string
-        answer:
-          type: string
-        turns:
-          type: integer
-        prompt_tokens:
-          type: integer
-        completion_tokens:
-          type: integer
-        total_tokens:
-          type: integer
-        message:
-          type: string
-
-    BuildRequest:
-      type: object
-      required: [file]
-      properties:
-        file:
-          type: string
-          format: binary
-          description: 上传的文档；支持 .md / .pdf / .html / .htm / .zip
-        model:
-          type: string
-          default: deepseek/deepseek-chat
-          description: 大模型标识；semantic 模式或 summarize=true 时使用
-        mode:
-          type: string
-          default: auto
-          enum: [auto, md, semantic]
-          description: auto=标题+编号；md=纯 Markdown 标题；semantic=LLM 驱动
-        summarize:
-          type: boolean
-          default: true
-          description: 是否为节点生成 LLM 摘要
-
-    BuildStreamEvent:
-      type: object
-      required: [type, bid]
-      properties:
-        type:
-          type: string
-          description: start / progress / warning / done / error
-        bid:
-          type: string
-        stage:
-          type: string
-          description: 当前阶段，如 parse / structure / refine / summarize / verify / done
-        elapsed_sec:
-          type: number
-        message:
-          type: string
-        done:
-          type: integer
-          description: 当前阶段已完成数量
-        total:
-          type: integer
-          description: 当前阶段总数量
-        expanded:
-          type: integer
-          description: refine 阶段已成功展开的大叶子节点数
-        node_count:
-          type: integer
-        result:
-          $ref: '#/components/schemas/BuildResult'
-
-    BuildResult:
-      type: object
-      required: [id, filename, tree, mermaid, stats, created_at]
-      properties:
-        id:
-          type: string
-          description: 构建 ID，由 int(now*1000) 的十六进制前缀生成
-          example: "1902897a3b4c0d1e"
         filename:
           type: string
-        content_type:
-          type: string
-          description: MIME type of the original file
-          example: "application/pdf"
-        file_size:
+          default: document.md
+        summarize:
+          type: boolean
+          default: false
+        refine_split_threshold:
           type: integer
-          description: Original file size in bytes
-          example: 1234567
-        sha256:
+          minimum: 1
+        refine_max_parts:
+          type: integer
+          minimum: 1
+
+    ChatRequest:
+      type: object
+      required: [question]
+      properties:
+        bid:
           type: string
-          description: SHA-256 hash of the original file
-          example: "2f4c...9a"
+          nullable: true
+        tree_id:
+          type: string
+          nullable: true
+        question:
+          type: string
+        model:
+          type: string
+          nullable: true
+        session_id:
+          type: string
+          nullable: true
+
+    BuildHistoryItem:
+      type: object
+      required: [id, tree_id, filename, title, created_at, stats]
+      properties:
+        id:
+          type: string
+        tree_id:
+          type: string
+        filename:
+          type: string
+        title:
+          type: string
+        created_at:
+          type: string
+        stats:
+          type: object
+        cached:
+          type: boolean
+        error:
+          nullable: true
         has_original_file:
           type: boolean
-          description: Whether the original file is persisted
-          default: false
         original_file_url:
           type: string
           nullable: true
-          description: URL to download the original file; null if not available
-          example: "/api/build/1902897a3b4c0d1e/file"
-        raw_text:
-          type: string
-          description: 从文档提取的纯文本；PDF/HTML 会先转成文本
-        mermaid:
-          type: string
-          description: 该树对应的 Mermaid 流程图源码
-        tree:
-          type: array
-          items:
-            $ref: '#/components/schemas/Node'
-        stats:
-          $ref: '#/components/schemas/BuildStats'
-        created_at:
-          type: string
-          description: server-side timestamp in HH MM SS format
-          example: "14:30:05"
-        cached:
-          type: boolean
-          description: 是否命中输入内容缓存；true 表示未重新解析
-          default: false
-        error:
-          type: string
-          description: 仅在失败时出现；消息内容
 
-    Node:
+    RootNodePreview:
       type: object
-      description: 文档树的递归节点
+      required: [path, title, children_count]
       properties:
-        title:
+        path:
           type: string
-        text:
+        title:
           type: string
         summary:
           type: string
-          description: summarize=false 或该节点未生成摘要时为空字符串
-        children:
-          type: array
-          items:
-            $ref: '#/components/schemas/Node'
+          nullable: true
+        children_count:
+          type: integer
+          minimum: 0
 
-    BuildStats:
+    TreeBuildResponse:
       type: object
-      required: [input_tokens, output_tokens, node_count, elapsed_sec, model, mode]
-      properties:
-        input_tokens:
-          type: integer
-        output_tokens:
-          type: integer
-        node_count:
-          type: integer
-        elapsed_sec:
-          type: number
-          format: double
-        model:
-          type: string
-        mode:
-          type: string
-          enum: [auto, md, semantic]
-
-    TreeRef:
-      type: object
-      required: [tree_id, node_count, max_depth]
-      properties:
-        tree_id:
-          type: string
-        node_count:
-          type: integer
-        max_depth:
-          type: integer
-
-    ForestCatalog:
-      type: object
-      required: [tree_count, trees]
-      properties:
-        tree_count:
-          type: integer
-        trees:
-          type: array
-          items:
-            $ref: '#/components/schemas/ForestTreeEntry'
-
-    ForestTreeEntry:
-      type: object
-      required: [tree_id, filename, node_count, max_depth, roots]
+      required: [tree_id, filename, title, node_count, max_depth, root_count, roots]
       properties:
         tree_id:
           type: string
         filename:
           type: string
-        doc_kind:
+        title:
           type: string
         node_count:
           type: integer
+          minimum: 1
         max_depth:
           type: integer
+          minimum: 0
+        root_count:
+          type: integer
+          minimum: 0
         roots:
           type: array
           items:
-            $ref: '#/components/schemas/NodeSummary'
+            $ref: "#/components/schemas/RootNodePreview"
 
-    ForestSearchResult:
+    TreeSummary:
       type: object
-      required: [trees, sections]
-      properties:
-        trees:
-          $ref: '#/components/schemas/ForestTreeSearch'
-        sections:
-          $ref: '#/components/schemas/ForestSectionSearch'
-
-    ForestTreeSearch:
-      type: object
-      properties:
-        query:
-          type: string
-        error:
-          type: string
-        hits:
-          type: array
-          items:
-            $ref: '#/components/schemas/ForestTreeHit'
-
-    ForestTreeHit:
-      type: object
+      required: [tree_id, title, node_count, max_depth, root_count]
       properties:
         tree_id:
           type: string
-        filename:
+        title:
           type: string
-        doc_kind:
+        node_count:
+          type: integer
+          minimum: 1
+        max_depth:
+          type: integer
+          minimum: 0
+        root_count:
+          type: integer
+          minimum: 0
+
+    TreeOverview:
+      allOf:
+        - $ref: "#/components/schemas/TreeSummary"
+        - type: object
+          required: [roots]
+          properties:
+            roots:
+              type: array
+              items:
+                $ref: "#/components/schemas/RootNodePreview"
+
+    DeleteTreeResponse:
+      type: object
+      required: [ok, tree_id]
+      properties:
+        ok:
+          type: boolean
+        tree_id:
+          type: string
+
+    TreeIndexMeta:
+      type: object
+      required:
+        [tree_id, tree_title, document_count, average_document_length, term_count, tree_document_length]
+      properties:
+        tree_id:
+          type: string
+        tree_title:
+          type: string
+        document_count:
+          type: integer
+          minimum: 0
+        average_document_length:
+          type: number
+          format: float
+          minimum: 0
+        term_count:
+          type: integer
+          minimum: 0
+        tree_document_length:
+          type: integer
+          minimum: 0
+
+    NodeQueryHit:
+      type: object
+      required: [tree_id, tree_title, node_id, path, title, score, snippet]
+      properties:
+        tree_id:
+          type: string
+        tree_title:
+          type: string
+        node_id:
+          type: string
+        path:
+          type: string
+        title:
           type: string
         score:
           type: number
+          format: float
+        summary:
+          type: string
+          nullable: true
+        snippet:
+          type: string
+
+    TreeQueryHit:
+      type: object
+      required: [tree_id, tree_title, score, node_count, root_titles]
+      properties:
+        tree_id:
+          type: string
+        tree_title:
+          type: string
+        score:
+          type: number
+          format: float
         node_count:
           type: integer
+          minimum: 1
         root_titles:
           type: array
           items:
             type: string
 
-    ForestSectionSearch:
-      type: object
-      properties:
-        query:
-          type: string
-        error:
-          type: string
-        hits:
-          type: array
-          items:
-            $ref: '#/components/schemas/ForestSectionHit'
-
-    ForestSectionHit:
-      type: object
-      properties:
-        tree_id:
-          type: string
-        filename:
-          type: string
-        path:
-          type: string
-        title:
-          type: string
-        summary:
-          type: string
-        score:
-          type: number
-
-    TreeOverview:
-      type: object
-      required: [tree_id, node_count, max_depth, roots]
-      properties:
-        tree_id:
-          type: string
-        node_count:
-          type: integer
-        max_depth:
-          type: integer
-        roots:
-          type: array
-          items:
-            $ref: '#/components/schemas/NodeSummary'
-
-    NodeSummary:
-      type: object
-      required: [path, title, summary, children_count]
-      properties:
-        path:
-          type: string
-          example: "0.1"
-        title:
-          type: string
-        summary:
-          type: string
-        children_count:
-          type: integer
-
     NodeDetail:
       type: object
-      required: [tree_id, path, title, text, summary, children_count, children]
+      required: [tree_id, path, title, text, children_count, children]
       properties:
         tree_id:
           type: string
@@ -811,129 +942,42 @@ components:
           type: string
         title:
           type: string
-        text:
-          type: string
         summary:
+          type: string
+          nullable: true
+        text:
           type: string
         children_count:
           type: integer
+          minimum: 0
         children:
           type: array
           items:
             type: string
-          description: 子节点的点分路径字符串列表
 
     NodeChildren:
       type: object
-      required: [tree_id, path, title, children_count, children]
+      required: [tree_id, path, children]
       properties:
         tree_id:
           type: string
         path:
           type: string
-        title:
-          type: string
-        children_count:
-          type: integer
         children:
           type: array
           items:
-            $ref: '#/components/schemas/NodeSummary'
+            $ref: "#/components/schemas/RootNodePreview"
 
-    QueryRow:
+    ForestSummary:
       type: object
-      required: [tool, tree_id, path, summary, timestamp]
+      required: [forest_id, tree_count, trees]
       properties:
-        tool:
+        forest_id:
           type: string
-          enum: [overview, inspect, get_children]
-        tree_id:
-          type: string
-        path:
-          type: string
-        summary:
-          type: string
-          description: result-formatted summary string; content depends on tool result shape
-        timestamp:
-          type: string
-          format: date-time
-          example: "2026-06-12 14:31:08"
-
-    QueryStats:
-      type: object
-      required: [total, by_tool, by_tree, recent]
-      properties:
-        total:
+        tree_count:
           type: integer
-        by_tool:
-          type: object
-          additionalProperties:
-            type: integer
-        by_tree:
-          type: object
-          additionalProperties:
-            type: integer
-        recent:
+          minimum: 0
+        trees:
           type: array
-          maxItems: 20
           items:
-            $ref: '#/components/schemas/QueryRow'
-
-    ChatSession:
-      type: object
-      required: [id, bid, model, turn_count, created_at, updated_at]
-      properties:
-        id:
-          type: string
-          description: 会话 ID，格式为 `s_<random>`
-        bid:
-          type: string
-          description: 关联的构建 ID
-        model:
-          type: string
-          description: 当前使用的模型
-        title:
-          type: string
-          description: 会话标题（取首条用户消息的前 120 字符）
-        turn_count:
-          type: integer
-          description: 已保存的轮次数
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-
-    ChatTurn:
-      type: object
-      required: [session_id, turn_idx, role, created_at]
-      properties:
-        session_id:
-          type: string
-        turn_idx:
-          type: integer
-          description: 轮次序号，从 0 开始
-        role:
-          type: string
-          enum: [user, assistant]
-        text:
-          type: string
-          description: 消息文本内容
-        tool_calls:
-          type: string
-          description: JSON 序列化的工具调用数组；assistant 轮次可能包含
-        tool_results:
-          type: string
-          description: JSON 序列化的工具结果数组；assistant 轮次可能包含
-        created_at:
-          type: string
-          format: date-time
-
-    Error:
-      type: object
-      required: [error]
-      properties:
-        error:
-          type: string
-          description: human readable error message; e.g. not found or unknown tree_id xxx
+            $ref: "#/components/schemas/TreeSummary"

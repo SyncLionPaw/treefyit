@@ -33,6 +33,22 @@ event and stops — no silent fallback.
 
 ## Quick Start
 
+### System dependency
+
+`treefyit.builder` now uses `libmagic` through `python-magic` to detect file types by content, not only by filename suffix.
+
+- macOS:
+
+```bash
+brew install libmagic
+```
+
+- Debian / Ubuntu:
+
+```bash
+sudo apt-get install libmagic1 libmagic-dev
+```
+
 ### CLI
 
 ```bash
@@ -61,6 +77,36 @@ from src.vis import save_html
 tree = build_tree("paper.md", model="deepseek/deepseek-chat", mode="auto", summarize=True)
 save_html(tree, "paper.html")
 ```
+
+### Python — `treefyit.builder` flow
+
+`treefyit/*` is intended to be an independent typed implementation, separate from the legacy `src/*` pipeline.
+
+The builder flow is:
+
+```text
+source -> parse -> infer levels -> build tree -> finalize -> Tree model
+```
+
+- `source`: detect the input kind (`pdf`, `html`, `text`, `zip`)
+- `parse`: normalize multi-type documents into Markdown or flat sections
+- `infer levels`: fix section hierarchy before tree assembly
+- `build tree`: turn flat sections into a nested tree
+- `finalize`: assign node ids and optionally summarize
+- `Tree model`: convert the nested tree into `treefyit.model.tree.Tree`
+
+`parse` is the normalization stage. It is responsible for turning different source formats into a common intermediate form, usually Markdown or flat sections. Different parse backends can be plugged in here, for example:
+
+- `markdown-it-py` for Markdown / text structure extraction
+- `MinerU` for PDF to Markdown conversion
+- `MarkItDown` for HTML / PDF to Markdown conversion
+
+`infer levels` is intentionally designed as a pluggable stage and should live in `treefyit/builder/infer.py`. The parser only provides raw headings / sections; hierarchy quality comes from the inferer. Different inferers can be plugged in here, for example:
+
+- rule-based inference for numbering patterns like `1`, `1.1`, `1.1.1`, `一、`, `（一）`
+- LLM-based inference for messy or weakly structured documents
+
+The important boundary is that `infer` should take flat sections as input and return flat sections with corrected levels, so the later tree-building step stays uniform.
 
 ### Python — LLM client
 
@@ -93,19 +139,125 @@ Both `chat` and `achat` retry up to 10 times on transient failures and raise
 ## Project layout
 
 ```
+treefyit/
+  builder/       typed build pipeline
+  config/        TOML settings
+  llm/           LiteLLM wrapper
+  model/         Tree / Forest models
+  query/         tree / forest query and BM25 index
+  server/        new FastAPI service
+  store/         JSON registry persistence
 src/
-  tree/          build_tree (CLI), pipeline (HTTP build), semantic, verify
-  server/        FastAPI app, build_helpers
+  tree/          legacy build pipeline
+  server/        legacy FastAPI app
   parser/        md, pdf, html, zip
-  store/         SQLite + JSON persistence under results/
+  store/         legacy SQLite + JSON persistence under results/
   chat/          pagent agent + streaming chat
   tools/         tree navigation for the agent
   llm/           chat / achat / count_tokens
 main.py          CLI entry (build | serve)
-openapi.yaml     HTTP API spec (also served at /openapi.yaml)
+openapi.yaml     new `treefyit.server` API spec
 ```
 
-## HTTP API
+## treefyit.server API
+
+`treefyit.server` 是当前正在推进的独立服务实现，只依赖 `treefyit/*`。
+
+启动方式：
+
+```bash
+uv run python -m treefyit.server
+```
+
+默认配置：
+
+- LLM 配置见 [treefyit/config/settings.local.toml](treefyit/config/settings.local.toml)
+- store 目录默认是 `.treefyit-store/`
+- OpenAPI 规范见 [openapi.yaml](openapi.yaml)
+
+### 接口概览
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 健康检查 |
+| POST | `/api/trees` | 从 text 构建 tree |
+| POST | `/api/trees/from-file` | 从文件构建 tree |
+| POST | `/api/build` | 兼容旧 build 路径 |
+| POST | `/api/build/stream` | 文件构建 NDJSON 进度流 |
+| GET | `/api/history` | 构建历史 |
+| GET | `/api/build/{bid}` | 构建详情和 tree |
+| GET | `/api/build/{bid}/file` | 下载上传原件 |
+| DELETE | `/api/build/{bid}` | 删除 build、tree、index 和原件 |
+| GET | `/api/trees` | 列出所有已注册 tree |
+| GET | `/api/trees/{tree_id}` | tree 概览 |
+| DELETE | `/api/trees/{tree_id}` | 删除 tree 和 index |
+| POST | `/api/trees/{tree_id}/index` | 构建或重建索引 |
+| GET | `/api/trees/{tree_id}/index/meta` | 读取索引摘要 |
+| GET | `/api/trees/{tree_id}/search/nodes` | 单树节点搜索 |
+| GET | `/api/trees/{tree_id}/nodes/{path}` | 节点详情 |
+| GET | `/api/trees/{tree_id}/children/{path}` | 子节点列表 |
+| GET | `/api/forest` | 默认 forest 概览 |
+| GET | `/api/forest/search` | 兼容旧版 forest 综合搜索 |
+| GET | `/api/forest/search/trees` | forest tree 搜索 |
+| GET | `/api/forest/search/nodes` | forest node 搜索 |
+| GET | `/api/queries` | 查询日志 |
+| GET | `/api/queries/stats` | 查询统计 |
+| POST | `/api/chat` | 基于 tree/index 的流式检索问答事件 |
+| GET | `/api/sessions` | 会话列表 |
+| GET | `/api/sessions/{sid}/turns` | 会话 turns |
+| DELETE | `/api/sessions/{sid}` | 删除会话 |
+
+### 最小样例
+
+#### 1. 从 text 构建 tree
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/trees \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "text": "# Intro\n\nHello world.\n\n## Detail\n\nMore text.",
+    "filename": "sample.md"
+  }'
+```
+
+#### 2. 构建索引
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/trees/{tree_id}/index
+```
+
+响应示例：
+
+```json
+{
+  "tree_id": "a1b2c3",
+  "tree_title": "sample.md",
+  "document_count": 3,
+  "average_document_length": 6.0,
+  "term_count": 12,
+  "tree_document_length": 18
+}
+```
+
+#### 3. 单树搜索
+
+```bash
+curl 'http://127.0.0.1:8765/api/trees/{tree_id}/search/nodes?q=detail&limit=5'
+```
+
+#### 4. forest 搜索
+
+```bash
+curl 'http://127.0.0.1:8765/api/forest/search/trees?q=reranking&limit=5'
+```
+
+说明：
+
+- 对外主路径使用 RESTful 命名
+- 兼容别名仍然保留，例如 `/api/build` 与 `/api/tree/{tree_id}/...`
+- build / index / delete 会同步写入 JSON store，并在服务启动时自动恢复
+
+## Legacy HTTP API
 
 所有接口均返回 JSON（流式接口除外）。路径前缀均为 `/api`。源实现见 [src/server/server.py](src/server/server.py)。
 

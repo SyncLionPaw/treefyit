@@ -11,6 +11,7 @@ from src.tree.doc_kind import (
     plan_structure,
     refine_max_leaf_depth,
 )
+from src.tree.model import Tree
 from src.tree.semantic import (
     attach_text_ranges,
     extract_structure,
@@ -32,7 +33,7 @@ async def build_tree_structure(
     input_tokens: int,
     is_pdf: bool = False,
     semantic_progress=None,
-) -> tuple[list[dict], DocKind, bool, int]:
+) -> tuple[Tree, DocKind, bool, int]:
     """Parse *source_path*, classify document type, build nested tree.
 
     Returns ``(tree, doc_kind, semantic_used, output_token_estimate)``.
@@ -59,9 +60,7 @@ async def build_tree_structure(
             doc_kind.value,
             mode,
         )
-        nodes = await extract_structure(
-            text, model=model, progress=semantic_progress
-        )
+        nodes = await extract_structure(text, model=model, progress=semantic_progress)
         attach_text_ranges(nodes, text)
         semantic_used = True
         output_tokens += SEMANTIC_OUTPUT_TOKEN_ESTIMATE
@@ -77,7 +76,7 @@ async def build_tree_structure(
             mode,
         )
 
-    tree = build_nodes(nodes)
+    tree: Tree = build_nodes(nodes)
 
     if plan.refine and tree:
         depth = refine_max_leaf_depth(tree, doc_kind)

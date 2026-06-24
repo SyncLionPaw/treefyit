@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from src.tree.model import Tree
 from src.tools.query import _count, _max_depth, _registry, _summarize_node
 
 __all__ = [
@@ -29,7 +30,7 @@ _tree_ids: list[str] = []
 
 def index_tree(
     tree_id: str,
-    tree: list[dict],
+    tree: Tree,
     *,
     filename: str = "",
     doc_kind: str = "",
@@ -46,9 +47,7 @@ def index_tree(
             root_parts.append(summary)
 
     search_text = " ".join(
-        part
-        for part in [filename, doc_kind, tree_id, *root_parts]
-        if part
+        part for part in [filename, doc_kind, tree_id, *root_parts] if part
     )
 
     _catalog[tree_id] = {
@@ -179,7 +178,7 @@ def find_sections(query: str, *, limit: int = 8) -> dict:
 
 def _flatten_nodes(
     tree_id: str,
-    tree: list[dict],
+    tree: Tree,
     filename: str,
     prefix: str = "",
 ) -> list[dict[str, str]]:

@@ -15,27 +15,30 @@ Usage::
 
 from __future__ import annotations
 
+from src.tree.model import Tree, TreeNode, to_wire_tree
+
 __all__ = ["register", "unregister", "list_trees", "overview", "inspect", "get_children"]
 
 # ---------------------------------------------------------------------------
 # Tree registry
 # ---------------------------------------------------------------------------
 
-_registry: dict[str, list[dict]] = {}
+_registry: dict[str, Tree] = {}
 
 
 def register(
     tree_id: str,
-    tree: list[dict],
+    tree: Tree,
     *,
     filename: str = "",
     doc_kind: str = "",
 ) -> None:
     """Store a tree so agents can reference it by *tree_id*."""
-    _registry[tree_id] = tree
+    public_tree = to_wire_tree(tree)
+    _registry[tree_id] = public_tree
     from src.tools.forest import index_tree
 
-    index_tree(tree_id, tree, filename=filename, doc_kind=doc_kind)
+    index_tree(tree_id, public_tree, filename=filename, doc_kind=doc_kind)
 
 
 def unregister(tree_id: str) -> None:
@@ -156,11 +159,11 @@ def get_children(tree_id: str, path: str = "0") -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _resolve(tree: list[dict], path: str) -> dict | None:
+def _resolve(tree: Tree, path: str) -> TreeNode | None:
     """Walk *tree* by dot-separated index path.  Returns the node or None."""
     indices = [int(x) for x in path.split(".")]
-    current: list[dict] = tree
-    node: dict | None = None
+    current: Tree = tree
+    node: TreeNode | None = None
     for idx in indices:
         if idx < 0 or idx >= len(current):
             return None
@@ -173,7 +176,7 @@ def _child_path(parent_path: str, index: int) -> str:
     return f"{parent_path}.{index}"
 
 
-def _summarize_node(node: dict, path: str) -> dict:
+def _summarize_node(node: TreeNode, path: str) -> dict:
     children = node.get("children", [])
     return {
         "path": path,
@@ -183,7 +186,7 @@ def _summarize_node(node: dict, path: str) -> dict:
     }
 
 
-def _count(nodes: list[dict]) -> int:
+def _count(nodes: Tree) -> int:
     n = 0
     for node in nodes:
         n += 1
@@ -192,7 +195,7 @@ def _count(nodes: list[dict]) -> int:
     return n
 
 
-def _max_depth(nodes: list[dict], depth: int = 1) -> int:
+def _max_depth(nodes: Tree, depth: int = 1) -> int:
     max_d = depth
     for node in nodes:
         if "children" in node:

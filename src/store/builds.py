@@ -6,6 +6,8 @@ import json
 import time
 from pathlib import Path
 
+from src.tree.model import from_wire_tree, to_wire_tree
+
 from . import _ROOT
 from .sqlite import connect
 
@@ -94,7 +96,7 @@ def save_build(bid: str, result: dict, cache_key: str | None = None) -> None:
         "filename": result["filename"],
         "raw_text": result.get("raw_text", ""),
         "mermaid": result.get("mermaid", ""),
-        "tree": result.get("tree", []),
+        "tree": to_wire_tree(result.get("tree", [])),
         "stats": result.get("stats", {}),
         "created_at": result["created_at"],
         "cached": result.get("cached", False),
@@ -118,9 +120,12 @@ def load_build(bid: str) -> dict | None:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    if "tree" in data:
+        data["tree"] = from_wire_tree(data.get("tree", []))
+    return data
 
 
 def delete_build(bid: str) -> None:
