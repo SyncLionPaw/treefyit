@@ -6,6 +6,7 @@ build and inspect TreefyIt knowledge bases over HTTP.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 import requests
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8765"
+BASE_URL_ENV = "TREEFYIT_BASE_URL"
 
 
 class TreefyitToolError(RuntimeError):
@@ -21,6 +23,18 @@ class TreefyitToolError(RuntimeError):
 
 def normalize_base_url(base_url: str) -> str:
     return base_url.rstrip("/")
+
+
+def resolve_base_url(base_url: str | None) -> str:
+    explicit = (base_url or "").strip()
+    if explicit:
+        return normalize_base_url(explicit)
+
+    from_env = os.getenv(BASE_URL_ENV, "").strip()
+    if from_env:
+        return normalize_base_url(from_env)
+
+    return DEFAULT_BASE_URL
 
 
 def parse_json_response(response: requests.Response) -> Any:
@@ -43,11 +57,11 @@ def ensure_success(response: requests.Response) -> Any:
 
 @dataclass
 class TreefyitClient:
-    base_url: str = DEFAULT_BASE_URL
+    base_url: str | None = None
     timeout_sec: float = 60.0
 
     def __post_init__(self) -> None:
-        self.base_url = normalize_base_url(self.base_url)
+        self.base_url = resolve_base_url(self.base_url)
 
     def build_knowledge(
         self, file: str | Path, *, summarize: bool = True

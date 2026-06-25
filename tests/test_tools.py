@@ -70,6 +70,42 @@ def test_overview_forest_calls_expected_endpoint(monkeypatch: pytest.MonkeyPatch
     assert captured["params"] is None
 
 
+def test_client_uses_env_base_url_when_not_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict = {}
+
+    def fake_get(url, params=None, timeout=None):
+        captured["url"] = url
+        return FakeResponse({"forest_id": "remote"})
+
+    monkeypatch.setenv("TREEFYIT_BASE_URL", "https://treefyit.example.com/")
+    monkeypatch.setattr("treefyit.tools.requests.get", fake_get)
+
+    client = TreefyitClient()
+    result = client.overview_forest()
+
+    assert result == {"forest_id": "remote"}
+    assert captured["url"] == "https://treefyit.example.com/api/forest"
+
+
+def test_explicit_base_url_overrides_env(monkeypatch: pytest.MonkeyPatch):
+    captured: dict = {}
+
+    def fake_get(url, params=None, timeout=None):
+        captured["url"] = url
+        return FakeResponse({"forest_id": "explicit"})
+
+    monkeypatch.setenv("TREEFYIT_BASE_URL", "https://env.example.com")
+    monkeypatch.setattr("treefyit.tools.requests.get", fake_get)
+
+    client = TreefyitClient(base_url="https://explicit.example.com/")
+    result = client.overview_forest()
+
+    assert result == {"forest_id": "explicit"}
+    assert captured["url"] == "https://explicit.example.com/api/forest"
+
+
 def test_search_trees_calls_expected_endpoint(monkeypatch: pytest.MonkeyPatch):
     captured: dict = {}
 

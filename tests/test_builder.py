@@ -342,6 +342,33 @@ def test_llm_section_refiner_falls_back_to_rule_based(monkeypatch: pytest.Monkey
     ]
 
 
+def test_default_refiner_uses_llm_titles_when_summarize_enabled(monkeypatch: pytest.MonkeyPatch):
+    def fake_refine_section(**kwargs):
+        return [
+            {"title": "Overview", "level_delta": 0, "text": "", "summary": "Overview summary"},
+            {"title": "系统设计", "level_delta": 1, "text": "Part A", "summary": "A summary"},
+            {"title": "部署方案", "level_delta": 1, "text": "Part B", "summary": "B summary"},
+        ]
+
+    monkeypatch.setattr("treefyit.builder.refine.refine_section", fake_refine_section)
+    monkeypatch.setattr(
+        "treefyit.builder.summarize.summarize_text",
+        lambda *, title, content="", child_summaries=None, **kwargs: (
+            " / ".join(child_summaries) if child_summaries else f"{title} summary"
+        ),
+    )
+
+    tree = build_tree_from_text(
+        "# Overview\n\n"
+        + "\n\n".join(["First paragraph." * 20, "Second paragraph." * 20]),
+        filename="llm-default-refine.md",
+        options=BuildOptions(summarize=True),
+    )
+
+    overview = tree.children[0]
+    assert [child.title for child in overview.children] == ["系统设计", "部署方案"]
+
+
 def test_detect_source_kind_prefers_libmagic_over_suffix(
     monkeypatch: pytest.MonkeyPatch,
 ):

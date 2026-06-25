@@ -5,9 +5,11 @@ import logging
 import time
 from collections import Counter
 from datetime import UTC, datetime
+from hashlib import sha256
 from mimetypes import guess_type
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -211,6 +213,48 @@ def upload_log_fields(
     }
 
 
+def build_content_disposition(filename: str, *, disposition: str = "inline") -> str:
+    normalized = Path(filename).name or "download"
+    stem = Path(normalized).stem
+    suffix = Path(normalized).suffix
+    fallback_stem = "".join(
+        char
+        for char in stem
+        if ord(char) < 128 and char not in {'"', "\\", ";", "\r", "\n"}
+    ).strip(" .")
+    fallback_suffix = "".join(
+        char
+        for char in suffix
+        if ord(char) < 128 and char not in {'"', "\\", ";", "\r", "\n"}
+    )
+    fallback = f"{fallback_stem or 'download'}{fallback_suffix}"
+    encoded = quote(normalized, safe="")
+    return f"{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+
+
+def build_file_sha256(data: bytes) -> str:
+    return sha256(data).hexdigest()
+
+
+def build_sha256_index(
+    build_history: dict[str, dict],
+    tree_registry: dict[str, Tree],
+) -> dict[str, str]:
+    index: dict[str, str] = {}
+    for build in sorted(
+        build_history.values(),
+        key=lambda item: str(item.get("created_at", "")),
+    ):
+        build_id = str(build.get("id") or build.get("tree_id") or "")
+        file_sha256 = str(build.get("sha256") or "").strip()
+        if not build_id or not file_sha256:
+            continue
+        if build_id not in tree_registry:
+            continue
+        index[file_sha256] = build_id
+    return index
+
+
 def register_tree(app: FastAPI, tree: Tree) -> str:
     tree_id = uuid4().hex
     tree.node_id = tree_id
@@ -230,6 +274,7 @@ def finalize_tree_build(
     raw_text: str | None = None,
     original_file: bytes | None = None,
     content_type: str | None = None,
+    file_sha256: str | None = None,
 ) -> TreeBuildResponse:
     tree_id = register_tree(app, tree)
     original_meta = save_original_file(
@@ -244,8 +289,11 @@ def finalize_tree_build(
         response,
         raw_text=raw_text,
         original_meta=original_meta,
+        file_sha256=file_sha256,
     )
     app.state.build_history[tree_id] = build
+    if file_sha256:
+        app.state.build_sha256_index[file_sha256] = tree_id
     store = get_registry_store(app)
     if store is not None:
         store.save_build(build)
@@ -290,6 +338,7 @@ def build_history_record(
     *,
     raw_text: str | None,
     original_meta: dict | None,
+    file_sha256: str | None,
 ) -> dict:
     stats = {
         "node_count": response.node_count,
@@ -312,6 +361,7 @@ def build_history_record(
         "storage_key": (original_meta or {}).get("storage_key"),
         "content_type": (original_meta or {}).get("content_type"),
         "file_size": (original_meta or {}).get("size"),
+        "sha256": file_sha256,
     }
     if raw_text is not None:
         build["raw_text"] = raw_text
@@ -364,6 +414,62 @@ def get_build_record(app: FastAPI, build_id: str) -> dict:
     if build is None:
         raise HTTPException(status_code=404, detail=f"unknown build id: {build_id}")
     return build
+
+
+def get_deduplicated_build(app: FastAPI, file_sha256: str) -> tuple[dict, Tree] | None:
+    build_id = app.state.build_sha256_index.get(file_sha256)
+    if not build_id:
+        return None
+    build = app.state.build_history.get(build_id)
+    tree = app.state.tree_registry.get(build_id)
+    if build is None or tree is None:
+        return None
+    return build, tree
+
+
+def remove_build_sha256_index(app: FastAPI, build_id: str) -> None:
+    build = app.state.build_history.get(build_id)
+    if build is None:
+        return
+    file_sha256 = str(build.get("sha256") or "").strip()
+    if not file_sha256:
+        return
+    if app.state.build_sha256_index.get(file_sha256) != build_id:
+        return
+    for candidate_id, candidate in app.state.build_history.items():
+        if candidate_id == build_id:
+            continue
+        if str(candidate.get("sha256") or "").strip() != file_sha256:
+            continue
+        if candidate_id not in app.state.tree_registry:
+            continue
+        app.state.build_sha256_index[file_sha256] = candidate_id
+        return
+    app.state.build_sha256_index.pop(file_sha256, None)
+
+
+def build_cached_tree_response(build: dict, tree: Tree) -> TreeBuildResponse:
+    return build_tree_response(tree, filename=str(build.get("filename") or tree.title))
+
+
+def build_cached_compat_response(build: dict, tree: Tree) -> dict:
+    response = build_tree_response(
+        tree, filename=str(build.get("filename") or tree.title)
+    )
+    payload = build_compat_response(
+        response,
+        tree,
+        raw_text=build.get("raw_text"),
+        error=build.get("error"),
+    )
+    payload["cached"] = True
+    payload["sha256"] = build.get("sha256")
+    payload["content_type"] = build.get("content_type")
+    payload["file_size"] = build.get("file_size")
+    payload["original_file_url"] = build.get("original_file_url")
+    payload["has_original_file"] = build.get("has_original_file")
+    payload["storage_key"] = build.get("storage_key")
+    return payload
 
 
 def build_default_forest(app: FastAPI) -> Forest:
@@ -576,6 +682,10 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
         else {}
     )
     app.state.build_history = store.load_builds() if store is not None else {}
+    app.state.build_sha256_index = build_sha256_index(
+        app.state.build_history,
+        app.state.tree_registry,
+    )
     app.state.query_history = store.load_queries() if store is not None else []
     app.state.sessions = store.load_sessions() if store is not None else {}
     app.state.original_registry = {}
@@ -623,6 +733,7 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
 
         try:
             file_bytes = await file.read()
+            file_sha256 = build_file_sha256(file_bytes)
             read_ms = (time.perf_counter() - read_started_at) * 1000
             log_fields = upload_log_fields(
                 endpoint=endpoint,
@@ -643,6 +754,20 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                 refine_max_parts,
                 read_ms,
             )
+            deduplicated = get_deduplicated_build(app, file_sha256)
+            if deduplicated is not None:
+                build, tree = deduplicated
+                total_ms = (time.perf_counter() - started_at) * 1000
+                logger.info(
+                    "upload deduplicated endpoint=%s request_id=%s filename=%s tree_id=%s file_sha256=%s total_ms=%.2f",
+                    endpoint,
+                    request_id,
+                    filename,
+                    build["id"],
+                    file_sha256,
+                    total_ms,
+                )
+                return build_cached_tree_response(build, tree)
             form = FileBuildForm(
                 filename=filename,
                 summarize=summarize,
@@ -659,6 +784,7 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                 filename=built_filename,
                 original_file=file_bytes,
                 content_type=content_type,
+                file_sha256=file_sha256,
             )
             finalize_ms = (time.perf_counter() - finalize_started_at) * 1000
             total_ms = (time.perf_counter() - started_at) * 1000
@@ -724,6 +850,7 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
             read_started_at = time.perf_counter()
             try:
                 file_bytes = await file.read()
+                file_sha256 = build_file_sha256(file_bytes)
                 read_ms = (time.perf_counter() - read_started_at) * 1000
                 logger.info(
                     "upload received endpoint=%s request_id=%s filename=%s content_type=%s file_size=%s summarize=%s mode=%s refine_split_threshold=%s refine_max_parts=%s read_ms=%.2f",
@@ -759,6 +886,20 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                         "stats": {},
                         "cached": False,
                     }
+                deduplicated = get_deduplicated_build(app, file_sha256)
+                if deduplicated is not None:
+                    build, tree = deduplicated
+                    total_ms = (time.perf_counter() - started_at) * 1000
+                    logger.info(
+                        "upload deduplicated endpoint=%s request_id=%s filename=%s tree_id=%s file_sha256=%s total_ms=%.2f",
+                        endpoint,
+                        request_id,
+                        filename,
+                        build["id"],
+                        file_sha256,
+                        total_ms,
+                    )
+                    return build_cached_compat_response(build, tree)
                 form = FileBuildForm(
                     filename=filename,
                     summarize=summarize,
@@ -775,6 +916,7 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                     filename=built_filename,
                     original_file=file_bytes,
                     content_type=content_type_header,
+                    file_sha256=file_sha256,
                 )
                 finalize_ms = (time.perf_counter() - finalize_started_at) * 1000
                 total_ms = (time.perf_counter() - started_at) * 1000
@@ -819,6 +961,7 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
         started_at = time.perf_counter()
         read_started_at = time.perf_counter()
         file_bytes = await file.read()
+        file_sha256 = build_file_sha256(file_bytes)
         read_ms = (time.perf_counter() - read_started_at) * 1000
         logger.info(
             "upload received endpoint=%s request_id=%s filename=%s content_type=%s file_size=%s summarize=%s refine_split_threshold=%s refine_max_parts=%s read_ms=%.2f",
@@ -851,6 +994,31 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                 }
             )
             try:
+                deduplicated = get_deduplicated_build(app, file_sha256)
+                if deduplicated is not None:
+                    build, _tree = deduplicated
+                    total_ms = (time.perf_counter() - started_at) * 1000
+                    logger.info(
+                        "upload deduplicated endpoint=%s request_id=%s filename=%s tree_id=%s file_sha256=%s total_ms=%.2f",
+                        endpoint,
+                        request_id,
+                        filename,
+                        build["id"],
+                        file_sha256,
+                        total_ms,
+                    )
+                    result = dict(build)
+                    result["cached"] = True
+                    yield line(
+                        {
+                            "type": "done",
+                            "stage": "done",
+                            "bid": build["id"],
+                            "cached": True,
+                            "result": result,
+                        }
+                    )
+                    return
                 yield line({"type": "progress", "stage": "build"})
                 form = FileBuildForm(
                     filename=filename,
@@ -868,6 +1036,7 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                     filename=built_filename,
                     original_file=file_bytes,
                     content_type=content_type,
+                    file_sha256=file_sha256,
                 )
                 finalize_ms = (time.perf_counter() - finalize_started_at) * 1000
                 total_ms = (time.perf_counter() - started_at) * 1000
@@ -888,6 +1057,7 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                         "type": "done",
                         "stage": "done",
                         "bid": result.tree_id,
+                        "cached": False,
                         "result": result.model_dump(),
                     }
                 )
@@ -963,13 +1133,14 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
         return Response(
             content=data,
             media_type=content_type,
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            headers={"Content-Disposition": build_content_disposition(filename)},
         )
 
     @app.delete("/api/build/{bid}")
     async def delete_build(bid: str) -> dict[str, object]:
         if bid not in app.state.build_history and bid not in app.state.tree_registry:
             raise HTTPException(status_code=404, detail=f"unknown build id: {bid}")
+        remove_build_sha256_index(app, bid)
         app.state.build_history.pop(bid, None)
         app.state.original_registry.pop(bid, None)
         app.state.tree_registry.pop(bid, None)
@@ -1121,8 +1292,6 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
     @app.post("/api/chat")
     async def chat(payload: ChatRequest) -> StreamingResponse:
         tree_id = payload.tree_id or payload.bid
-        if not tree_id:
-            raise HTTPException(status_code=400, detail="bid or tree_id is required")
         if not payload.question:
             raise HTTPException(status_code=400, detail="question is required")
         question = payload.question

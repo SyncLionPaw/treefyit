@@ -25,10 +25,46 @@ except ImportError:  # pragma: no cover - handled at runtime by error event.
 path_pattern = re.compile(r"^\d+(?:\.\d+)*$")
 
 
+def optional_setting_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def compact_tool_content(content: str, limit: int = 240) -> str:
+    text = " ".join(content.split()).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}..."
+
+
+def fallback_answer_from_tools(tool_results: list[dict]) -> str:
+    snippets: list[str] = []
+    for item in tool_results:
+        if item.get("ok") is False:
+            continue
+        content = compact_tool_content(str(item.get("content") or ""))
+        if not content:
+            continue
+        name = str(item.get("name") or "tool")
+        snippets.append(f"- {name}: {content}")
+        if len(snippets) >= 3:
+            break
+
+    if not snippets:
+        return ""
+
+    return (
+        "已完成检索，但模型没有返回最终文本答复。以下是本轮工具结果摘要：\n"
+        + "\n".join(snippets)
+    )
+
+
 async def build_pagent_events(
     app: FastAPI,
     *,
-    tree_id: str,
+    tree_id: str | None,
     question: str,
     session_id: str | None,
 ) -> AsyncIterator[dict]:
@@ -39,9 +75,15 @@ async def build_pagent_events(
         }
         return
 
-    tree = app.state.tree_registry.get(tree_id)
-    if tree is None:
+    current_tree = app.state.tree_registry.get(tree_id) if tree_id else None
+    if tree_id and current_tree is None:
         yield {"type": "error", "message": f"unknown tree_id: {tree_id}"}
+        return
+    if not app.state.tree_registry:
+        yield {
+            "type": "error",
+            "message": "no knowledge bases available; build or load one first.",
+        }
         return
 
     sid, history = ensure_chat_session(
@@ -50,15 +92,18 @@ async def build_pagent_events(
         tree_id=tree_id,
         title=question[:120],
     )
-    session = Session(build_system_prompt(app, tree_id, tree))
+    session = Session(build_system_prompt(app, tree_id, current_tree))
     replay_history(session, history)
 
     try:
         llm = resolve_llm()
+        tools = list(forest_tools(app, tree_id))
+        if tree_id and current_tree is not None:
+            tools.extend(tree_tools(app, tree_id))
         agent = Agent(
             llm=llm,
             session=session,
-            tools=[*forest_tools(app, tree_id), *tree_tools(app, tree_id)],
+            tools=tools,
             max_turns=8,
         )
     except Exception as exc:  # noqa: BLE001
@@ -72,7 +117,7 @@ async def build_pagent_events(
         "type": "start",
         "bid": tree_id,
         "tree_id": tree_id,
-        "filename": tree.title,
+        "filename": current_tree.title if current_tree is not None else None,
         "session_id": sid,
     }
 
@@ -132,7 +177,11 @@ async def build_pagent_events(
                 continue
 
             if event_name == "RunEnd":
-                answer = getattr(event, "content", "") or "".join(assistant_parts)
+                answer = (
+                    getattr(event, "content", "")
+                    or "".join(assistant_parts)
+                    or fallback_answer_from_tools(tool_results)
+                )
                 usage = getattr(event, "usage", None) or SimpleNamespace()
                 append_chat_turn(
                     app,
@@ -162,23 +211,29 @@ def resolve_llm():
         "deepseek-chat",
         "deepseek-reasoner",
     }:
-        return DeepSeek(requested.removeprefix("deepseek/"))
+        return DeepSeek(
+            requested.removeprefix("deepseek/"),
+            apikey=optional_setting_text(settings.api_key),
+            base_url=optional_setting_text(settings.base_url),
+        )
 
     if requested.startswith("ollama/"):
         model_id = requested.removeprefix("ollama/")
-        base_url = (settings.base_url or "http://127.0.0.1:11434").rstrip("/")
+        base_url = (
+            optional_setting_text(settings.base_url) or "http://127.0.0.1:11434"
+        ).rstrip("/")
         if not base_url.endswith("/v1"):
             base_url = f"{base_url}/v1"
         return LLM(
             model_id,
             base_url=base_url,
-            apikey=settings.api_key or "ollama",
+            apikey=optional_setting_text(settings.api_key) or "ollama",
         )
 
     return LLM(
         requested,
-        base_url=settings.base_url,
-        apikey=settings.api_key,
+        base_url=optional_setting_text(settings.base_url),
+        apikey=optional_setting_text(settings.api_key),
     )
 
 
@@ -246,14 +301,18 @@ def tree_tools(app: FastAPI, tree_id: str) -> list:
     return [document_overview, node_children, node_content]
 
 
-def forest_tools(app: FastAPI, current_tree_id: str) -> list:
+def forest_tools(app: FastAPI, current_tree_id: str | None) -> list:
     @tool()
     def forest_catalog() -> str:
         """List all documents in the forest."""
         trees = sorted(app.state.tree_registry.values(), key=lambda tree: tree.node_id)
         lines = [f"forest: {len(trees)} trees"]
         for tree in trees:
-            marker = " (current chat)" if tree.node_id == current_tree_id else ""
+            marker = (
+                " (current chat)"
+                if current_tree_id and tree.node_id == current_tree_id
+                else ""
+            )
             lines.append(
                 f"- [{tree.node_id}] {tree.title}{marker} ({tree.subtree_size or 1} nodes)"
             )
@@ -298,13 +357,21 @@ def forest_tools(app: FastAPI, current_tree_id: str) -> list:
     return [forest_catalog, find_sections, tree_node_content]
 
 
-def build_system_prompt(app: FastAPI, tree_id: str, tree: Tree) -> str:
+def build_system_prompt(app: FastAPI, tree_id: str | None, tree: Tree | None) -> str:
     forest_count = len(app.state.tree_registry)
+    if tree_id and tree is not None:
+        return (
+            f"You are a document assistant for `{tree.title}` (tree_id={tree_id}). "
+            f"The server currently has {forest_count} document tree(s). "
+            "Use tools for document-content questions. Use numeric dot paths like `0` "
+            "or `0.1`, never section titles, when navigating. Answer in the user's language."
+        )
     return (
-        f"You are a document assistant for `{tree.title}` (tree_id={tree_id}). "
+        "You are a document assistant over a forest of document trees. "
         f"The server currently has {forest_count} document tree(s). "
-        "Use tools for document-content questions. Use numeric dot paths like `0` "
-        "or `0.1`, never section titles, when navigating. Answer in the user's language."
+        "When the user does not specify a knowledge base, inspect the forest first, "
+        "find relevant sections across trees, and ground the answer in retrieved content. "
+        "Answer in the user's language."
     )
 
 
@@ -320,7 +387,7 @@ def ensure_chat_session(
     app: FastAPI,
     *,
     session_id: str | None,
-    tree_id: str,
+    tree_id: str | None,
     title: str,
 ) -> tuple[str, list[dict]]:
     sid = session_id or uuid4().hex
@@ -328,7 +395,7 @@ def ensure_chat_session(
         now = now_iso()
         app.state.sessions[sid] = {
             "session_id": sid,
-            "tree_id": tree_id,
+            "tree_id": tree_id or "",
             "title": title,
             "created_at": now,
             "updated_at": now,

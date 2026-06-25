@@ -20,7 +20,11 @@ from treefyit.builder.parse import (
     parse_pdf_sections,
     parse_text_sections,
 )
-from treefyit.builder.refine import RuleBasedSectionRefiner, SectionRefiner
+from treefyit.builder.refine import (
+    LLMSectionRefiner,
+    RuleBasedSectionRefiner,
+    SectionRefiner,
+)
 from treefyit.builder.source import detect_source_kind
 from treefyit.builder.summarize import summarize_legacy_tree
 from treefyit.model.tree import Tree
@@ -85,6 +89,7 @@ def build_tree_from_sections(
     inferred_sections = infer_sections(sections, level_inferer=level_inferer)
     refined_sections = refine_sections(
         inferred_sections,
+        options=opts,
         section_refiner=section_refiner,
     )
     legacy_tree = build_legacy_tree_from_sections(refined_sections)
@@ -110,6 +115,7 @@ def build_legacy_tree_from_file(
         refined_sections = refine_sections(
             inferred_sections,
             source_kind=kind,
+            options=options,
             section_refiner=section_refiner,
         )
         legacy_tree = build_legacy_tree_from_sections(refined_sections)
@@ -125,6 +131,7 @@ def build_legacy_tree_from_file(
         refined_sections = refine_sections(
             inferred_sections,
             source_kind=kind,
+            options=options,
             section_refiner=section_refiner,
         )
         legacy_tree = build_legacy_tree_from_sections(refined_sections)
@@ -151,6 +158,7 @@ def build_legacy_tree_from_text(
     refined_sections = refine_sections(
         inferred_sections,
         text=text,
+        options=options,
         section_refiner=section_refiner,
     )
     legacy_tree = build_legacy_tree_from_sections(refined_sections)
@@ -174,9 +182,15 @@ def refine_sections(
     *,
     text: str | None = None,
     source_kind: str | None = None,
+    options: BuildOptions | None = None,
     section_refiner: SectionRefiner | None = None,
 ) -> list[dict]:
-    refiner = section_refiner or RuleBasedSectionRefiner()
+    if section_refiner is not None:
+        refiner = section_refiner
+    elif options is not None and options.summarize:
+        refiner = LLMSectionRefiner()
+    else:
+        refiner = RuleBasedSectionRefiner()
     return refiner.refine(sections, text=text, source_kind=source_kind)
 
 

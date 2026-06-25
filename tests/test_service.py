@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+import pytest
 
 from treefyit.server import create_app
 
@@ -15,6 +16,85 @@ def test_health_endpoint_returns_ok():
         "status": "ok",
         "service": "treefyit",
     }
+
+
+def test_resolve_llm_uses_configured_deepseek_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from treefyit.chat import pagent
+    from treefyit.config import (
+        AppSettings,
+        BuilderSettings,
+        LLMSettings,
+        MinerUSettings,
+    )
+
+    captured = {}
+
+    class FakeDeepSeek:
+        def __init__(self, model_id="deepseek-v4-flash", **kwargs):
+            captured["model_id"] = model_id
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        pagent,
+        "get_settings",
+        lambda: AppSettings(
+            llm=LLMSettings(
+                model="deepseek/deepseek-v4-flash",
+                api_key="demo-key",
+                base_url="https://api.deepseek.com",
+            ),
+            mineru=MinerUSettings(),
+            builder=BuilderSettings(),
+        ),
+    )
+    monkeypatch.setattr(pagent, "DeepSeek", FakeDeepSeek)
+
+    pagent.resolve_llm()
+
+    assert captured["model_id"] == "deepseek-v4-flash"
+    assert captured["apikey"] == "demo-key"
+    assert captured["base_url"] == "https://api.deepseek.com"
+
+
+def test_resolve_llm_normalizes_blank_ollama_api_key(monkeypatch: pytest.MonkeyPatch):
+    from treefyit.chat import pagent
+    from treefyit.config import (
+        AppSettings,
+        BuilderSettings,
+        LLMSettings,
+        MinerUSettings,
+    )
+
+    captured = {}
+
+    class FakeLLM:
+        def __init__(self, model_id, base_url=None, apikey=None, request_kwargs=None):
+            captured["model_id"] = model_id
+            captured["base_url"] = base_url
+            captured["apikey"] = apikey
+
+    monkeypatch.setattr(
+        pagent,
+        "get_settings",
+        lambda: AppSettings(
+            llm=LLMSettings(
+                model="ollama/gemma4:latest",
+                api_key="   ",
+                base_url=" http://127.0.0.1:11434/ ",
+            ),
+            mineru=MinerUSettings(),
+            builder=BuilderSettings(),
+        ),
+    )
+    monkeypatch.setattr(pagent, "LLM", FakeLLM)
+
+    pagent.resolve_llm()
+
+    assert captured["model_id"] == "gemma4:latest"
+    assert captured["base_url"] == "http://127.0.0.1:11434/v1"
+    assert captured["apikey"] == "ollama"
 
 
 def test_post_trees_builds_and_registers_tree():
@@ -89,6 +169,32 @@ def test_post_trees_from_file_builds_and_registers_tree():
     assert payload["tree_id"] in app.state.tree_registry
 
 
+def test_post_trees_from_file_deduplicates_by_file_sha256():
+    app = create_app()
+    client = TestClient(app)
+    file_bytes = b"# Upload\n\nFile body\n\n## Section\n\nMore text."
+
+    first_response = client.post(
+        "/api/trees/from-file",
+        files={"file": ("upload.md", file_bytes, "text/markdown")},
+    )
+    second_response = client.post(
+        "/api/trees/from-file",
+        files={"file": ("upload-copy.md", file_bytes, "text/markdown")},
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    first_payload = first_response.json()
+    second_payload = second_response.json()
+    assert second_payload["tree_id"] == first_payload["tree_id"]
+    assert len(app.state.build_history) == 1
+
+    detail_response = client.get(f"/api/build/{first_payload['tree_id']}")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["sha256"] == app.state.build_history[first_payload["tree_id"]]["sha256"]
+
+
 def test_post_build_accepts_multipart_for_legacy_compatibility():
     app = create_app()
     client = TestClient(app)
@@ -113,6 +219,30 @@ def test_post_build_accepts_multipart_for_legacy_compatibility():
     assert payload["title"] == "legacy-upload.md"
     assert payload["root_count"] == 1
     assert payload["tree_id"] in app.state.tree_registry
+
+
+def test_post_build_multipart_returns_cached_result_for_duplicate_file():
+    app = create_app()
+    client = TestClient(app)
+    file_bytes = b"# Legacy Upload\n\nBody"
+
+    first_response = client.post(
+        "/api/build",
+        files={"file": ("legacy-upload.md", file_bytes, "text/markdown")},
+        data={"summarize": "false"},
+    )
+    second_response = client.post(
+        "/api/build",
+        files={"file": ("legacy-upload-copy.md", file_bytes, "text/markdown")},
+        data={"summarize": "true"},
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    first_payload = first_response.json()
+    second_payload = second_response.json()
+    assert second_payload["id"] == first_payload["id"]
+    assert second_payload["cached"] is True
 
 
 def test_post_tree_index_builds_and_registers_index():
@@ -526,6 +656,30 @@ def test_file_build_saves_original_file_and_build_delete_removes_tree():
     assert tree_id not in app.state.tree_registry
 
 
+def test_get_build_file_supports_unicode_filename_in_content_disposition():
+    app = create_app()
+    client = TestClient(app)
+
+    build_response = client.post(
+        "/api/trees/from-file",
+        files={
+            "file": (
+                "中文资料.md",
+                b"# Title\n\nBody",
+                "text/markdown",
+            )
+        },
+    )
+    tree_id = build_response.json()["tree_id"]
+
+    file_response = client.get(f"/api/build/{tree_id}/file")
+
+    assert file_response.status_code == 200
+    disposition = file_response.headers["content-disposition"]
+    assert 'filename="download.md"' in disposition
+    assert "filename*=UTF-8''%E4%B8%AD%E6%96%87%E8%B5%84%E6%96%99.md" in disposition
+
+
 def test_stream_build_returns_ndjson_events():
     client = TestClient(create_app())
 
@@ -544,6 +698,29 @@ def test_stream_build_returns_ndjson_events():
     events = [line for line in response.text.splitlines() if line]
     assert '"type": "start"' in events[0]
     assert any('"type": "done"' in event for event in events)
+
+
+def test_file_build_dedup_survives_restart(tmp_path):
+    from treefyit.store import RegistryStore
+
+    file_bytes = b"# Persisted\n\nBody"
+    first_app = create_app(store=RegistryStore(tmp_path))
+    first_client = TestClient(first_app)
+    first_response = first_client.post(
+        "/api/trees/from-file",
+        files={"file": ("persisted.md", file_bytes, "text/markdown")},
+    )
+    first_tree_id = first_response.json()["tree_id"]
+
+    second_app = create_app(store=RegistryStore(tmp_path))
+    second_client = TestClient(second_app)
+    second_response = second_client.post(
+        "/api/trees/from-file",
+        files={"file": ("persisted-copy.md", file_bytes, "text/markdown")},
+    )
+
+    assert second_response.status_code == 200
+    assert second_response.json()["tree_id"] == first_tree_id
 
 
 def test_query_history_and_stats_are_recorded():
@@ -637,3 +814,129 @@ def test_chat_creates_session_and_streams_events(monkeypatch):
     assert turns_response.status_code == 200
     assert len(turns_response.json()["turns"]) == 2
     assert delete_response.json() == {"deleted": True, "session_id": session_id}
+
+
+def test_chat_without_selected_tree_uses_forest_context(monkeypatch):
+    from treefyit.chat import pagent
+
+    class TextDelta:
+        def __init__(self, text):
+            self.text = text
+
+    class RunEnd:
+        def __init__(self, content):
+            self.content = content
+            self.usage = None
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, llm, session, tools=None, max_turns=8):
+            captured["tool_names"] = [
+                getattr(tool, "name", getattr(tool, "__name__", ""))
+                for tool in (tools or [])
+            ]
+            captured["system_prompt"] = session.messages[0]["content"]
+
+        async def arun_events(self, question):
+            yield TextDelta(f"forest answer: {question}")
+            yield RunEnd(f"forest answer: {question}")
+
+    monkeypatch.setattr(pagent, "Agent", FakeAgent)
+    monkeypatch.setattr(pagent, "resolve_llm", lambda: object())
+
+    app = create_app()
+    client = TestClient(app)
+    client.post(
+        "/api/trees",
+        json={
+            "text": "# Forest\n\nShared body",
+            "filename": "forest.md",
+        },
+    )
+
+    chat_response = client.post(
+        "/api/chat",
+        json={"question": "这份资料讲了什么"},
+    )
+
+    assert chat_response.status_code == 200
+    assert "forest answer" in chat_response.text
+    assert "forest_catalog" in captured["tool_names"]
+    assert "find_sections" in captured["tool_names"]
+    assert (
+        "document assistant over a forest of document trees"
+        in captured["system_prompt"]
+    )
+
+
+def test_chat_falls_back_to_tool_summary_when_model_returns_no_text(monkeypatch):
+    from treefyit.chat import pagent
+
+    class ToolCallBegin:
+        def __init__(self, name, arguments="", id=""):
+            self.name = name
+            self.arguments = arguments
+            self.id = id
+
+    class ToolResult:
+        def __init__(self, name, content, ok=True, tool_call_id=""):
+            self.name = name
+            self.content = content
+            self.ok = ok
+            self.tool_call_id = tool_call_id
+
+    class RunEnd:
+        def __init__(self, content=""):
+            self.content = content
+            self.usage = None
+
+    class FakeAgent:
+        async def arun_events(self, question):
+            yield ToolCallBegin("forest_catalog")
+            yield ToolResult("forest_catalog", "document: chat.md\nnodes: 3")
+            yield RunEnd("")
+
+        def __init__(self, llm, session, tools=None, max_turns=8):
+            self.llm = llm
+            self.session = session
+            self.tools = tools or []
+            self.max_turns = max_turns
+
+    monkeypatch.setattr(pagent, "Agent", FakeAgent)
+    monkeypatch.setattr(pagent, "resolve_llm", lambda: object())
+
+    app = create_app()
+    client = TestClient(app)
+    build_response = client.post(
+        "/api/trees",
+        json={
+            "text": "# Chat\n\nAnswerable content",
+            "filename": "chat.md",
+        },
+    )
+    tree_id = build_response.json()["tree_id"]
+
+    chat_response = client.post(
+        "/api/chat",
+        json={
+            "bid": tree_id,
+            "question": "content",
+        },
+    )
+
+    assert chat_response.status_code == 200
+    assert "模型没有返回最终文本答复" in chat_response.text
+    assert "forest_catalog" in chat_response.text
+
+
+def test_chat_without_knowledge_base_streams_error():
+    client = TestClient(create_app())
+
+    chat_response = client.post(
+        "/api/chat",
+        json={"question": "hello"},
+    )
+
+    assert chat_response.status_code == 200
+    assert "no knowledge bases available" in chat_response.text
