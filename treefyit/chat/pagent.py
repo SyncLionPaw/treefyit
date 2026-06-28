@@ -4,25 +4,79 @@ import json
 import re
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
-from uuid import uuid4
 
 from fastapi import FastAPI
 
+from treefyit.chat.session import ChatSessionService
 from treefyit.config import get_settings
 from treefyit.model.tree import Tree
 from treefyit.query.query import (
-    content_to_search_text,
     build_tree_index,
+    content_to_search_text,
     score_nodes_bm25,
 )
 
-try:
-    from pagent import Agent, DeepSeek, LLM, Session, tool
-except ImportError:  # pragma: no cover - handled at runtime by error event.
-    Agent = DeepSeek = LLM = Session = tool = None  # type: ignore[assignment]
+from pagent import (
+    Agent,
+    DeepSeek,
+    LLM,
+    Ollama,
+    ReasoningDelta,
+    RunEnd,
+    Session,
+    TextDelta,
+    ToolCallBegin,
+    ToolResult,
+    TurnEnd,
+    tool,
+)
 
 
 path_pattern = re.compile(r"^\d+(?:\.\d+)*$")
+document_intent_keywords = (
+    "知识库",
+    "资料",
+    "文档",
+    "文件",
+    "原文",
+    "上传",
+    "tree",
+    "forest",
+    "节点",
+    "章节",
+    "段落",
+    "内容",
+    "这份",
+    "这个库",
+    "这篇",
+    "里面",
+    "根据",
+    "引用",
+    "检索",
+    "搜索",
+    "查找",
+    "总结",
+    "概括",
+    "讲了什么",
+    "说了什么",
+    "提到",
+    "提及",
+    "section",
+    "document",
+    "knowledge base",
+    "uploaded",
+    "source",
+    "reference",
+    "summarize",
+    "summary",
+    "find",
+    "search",
+    "content",
+)
+document_intent_patterns = (
+    re.compile(r"\b\d+(?:\.\d+)+\b"),
+    re.compile(r"(第[一二三四五六七八九十\d]+[章节])"),
+)
 
 
 def optional_setting_text(value: str | None) -> str | None:
@@ -68,48 +122,36 @@ async def build_pagent_events(
     question: str,
     session_id: str | None,
 ) -> AsyncIterator[dict]:
-    if Agent is None or Session is None or tool is None:
-        yield {
-            "type": "error",
-            "message": "pagent is not installed; install pagent>=0.2.0.",
-        }
-        return
-
     current_tree = app.state.tree_registry.get(tree_id) if tree_id else None
     if tree_id and current_tree is None:
         yield {"type": "error", "message": f"unknown tree_id: {tree_id}"}
         return
-    if not app.state.tree_registry:
-        yield {
-            "type": "error",
-            "message": "no knowledge bases available; build or load one first.",
-        }
-        return
 
-    sid, history = ensure_chat_session(
-        app,
+    chat_sessions = get_chat_sessions(app)
+    chat_session = chat_sessions.get_or_create(
         session_id=session_id,
-        tree_id=tree_id,
         title=question[:120],
     )
-    session = Session(build_system_prompt(app, tree_id, current_tree))
-    replay_history(session, history)
+    tools_enabled = question_needs_document_tools(
+        question,
+        tree_id=tree_id,
+        forest_count=len(app.state.tree_registry),
+    )
+    session = Session(build_system_prompt(app, tree_id, current_tree, tools_enabled))
+    replay_history(session, chat_session.turns)
 
     try:
-        llm = resolve_llm()
-        tools = list(forest_tools(app, tree_id))
-        if tree_id and current_tree is not None:
-            tools.extend(tree_tools(app, tree_id))
-        agent = Agent(
-            llm=llm,
+        agent = build_agent(
+            app,
+            tree_id=tree_id,
+            current_tree=current_tree,
             session=session,
-            tools=tools,
-            max_turns=8,
+            tools_enabled=tools_enabled,
         )
     except Exception as exc:  # noqa: BLE001
         yield {
             "type": "error",
-            "message": f"failed to initialize pagent compatible API: {exc}",
+            "message": f"failed to initialize pagent agent: {exc}",
         }
         return
 
@@ -118,90 +160,198 @@ async def build_pagent_events(
         "bid": tree_id,
         "tree_id": tree_id,
         "filename": current_tree.title if current_tree is not None else None,
-        "session_id": sid,
+        "session_id": chat_session.session_id,
+        "tools_enabled": tools_enabled,
     }
 
     assistant_parts: list[str] = []
     tool_calls: list[dict] = []
     tool_results: list[dict] = []
     tool_call_ids: dict[str, str] = {}
+    assistant_events: list[dict] = []
 
     try:
         async for event in agent.arun_events(question):
-            event_name = type(event).__name__
-            if event_name == "TextDelta":
-                text = getattr(event, "text", "")
-                assistant_parts.append(text)
-                yield {"type": "text", "text": text}
-                continue
-
-            if event_name == "ReasoningDelta":
-                yield {"type": "reasoning", "text": getattr(event, "text", "")}
-                continue
-
-            if event_name == "ToolCallBegin":
-                raw_id = getattr(event, "id", "") or ""
-                synthetic_id = f"tc-{len(tool_calls)}"
-                if raw_id:
-                    tool_call_ids[raw_id] = synthetic_id
-                item = {
-                    "id": synthetic_id,
-                    "name": getattr(event, "name", ""),
-                    "arguments": getattr(event, "arguments", ""),
-                }
-                tool_calls.append(item)
-                yield {"type": "tool_call", **item}
-                continue
-
-            if event_name == "ToolResult":
-                content = getattr(event, "content", "")
-                if len(content) > 8000:
-                    content = content[:8000] + "\n... (truncated)"
-                raw_id = getattr(event, "tool_call_id", getattr(event, "id", "")) or ""
-                if raw_id in tool_call_ids:
-                    result_id = tool_call_ids[raw_id]
-                elif len(tool_results) < len(tool_calls):
-                    result_id = tool_calls[len(tool_results)]["id"]
-                    if raw_id:
-                        tool_call_ids[raw_id] = result_id
-                else:
-                    result_id = raw_id or f"tc-{len(tool_results)}"
-                item = {
-                    "id": result_id,
-                    "name": getattr(event, "name", ""),
-                    "ok": bool(getattr(event, "ok", True)),
-                    "content": content,
-                }
-                tool_results.append(item)
-                yield {"type": "tool_result", **item}
-                continue
-
-            if event_name == "RunEnd":
-                answer = (
-                    getattr(event, "content", "")
-                    or "".join(assistant_parts)
-                    or fallback_answer_from_tools(tool_results)
-                )
-                usage = getattr(event, "usage", None) or SimpleNamespace()
-                append_chat_turn(
-                    app,
-                    sid,
-                    question=question,
-                    answer=answer,
-                    tool_calls=tool_calls,
-                    tool_results=tool_results,
-                )
-                yield {
-                    "type": "done",
-                    "answer": answer,
-                    "turns": len(app.state.sessions[sid]["turns"]),
-                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
-                    "completion_tokens": getattr(usage, "completion_tokens", None),
-                    "total_tokens": getattr(usage, "total_tokens", None),
-                }
-                return
+            match event:
+                case TextDelta(text=text):
+                    assistant_parts.append(text)
+                    assistant_events.append({"type": "text", "text": text})
+                    yield {"type": "text", "text": text}
+                case ReasoningDelta(text=text):
+                    assistant_events.append({"type": "reasoning", "text": text})
+                    yield {"type": "reasoning", "text": text}
+                case ToolCallBegin(tool_call_id=raw_id, name=name, arguments=arguments):
+                    item = start_tool_call(
+                        tool_calls,
+                        tool_call_ids,
+                        raw_id=raw_id,
+                        name=name,
+                        arguments=arguments,
+                    )
+                    assistant_events.append({"type": "tool_call", **item})
+                    yield {"type": "tool_call", **item}
+                case ToolResult(
+                    tool_call_id=raw_id,
+                    name=name,
+                    content=content,
+                    ok=ok,
+                ):
+                    item = finish_tool_call(
+                        tool_calls,
+                        tool_results,
+                        tool_call_ids,
+                        raw_id=raw_id,
+                        name=name,
+                        content=content,
+                        ok=ok,
+                    )
+                    assistant_events.append({"type": "tool_result", **item})
+                    yield {"type": "tool_result", **item}
+                case TurnEnd(turn=turn, stopped=stopped):
+                    yield {"type": "turn_end", "turn": turn, "stopped": stopped}
+                case RunEnd(content=content, usage=usage):
+                    answer = (
+                        content
+                        or "".join(assistant_parts)
+                        or fallback_answer_from_tools(tool_results)
+                    )
+                    token_usage = usage or SimpleNamespace()
+                    chat_session = chat_sessions.append_turn(
+                        chat_session.session_id,
+                        question=question,
+                        answer=answer,
+                        tool_calls=tool_calls,
+                        tool_results=tool_results,
+                        assistant_events=assistant_events,
+                    )
+                    yield {
+                        "type": "done",
+                        "answer": answer,
+                        "turns": len(chat_session.turns),
+                        "prompt_tokens": getattr(token_usage, "prompt_tokens", None),
+                        "completion_tokens": getattr(
+                            token_usage, "completion_tokens", None
+                        ),
+                        "total_tokens": getattr(token_usage, "total_tokens", None),
+                    }
+                    return
+                case _:
+                    continue
     except Exception as exc:  # noqa: BLE001
         yield {"type": "error", "message": str(exc)}
+
+
+def build_agent(
+    app: FastAPI,
+    *,
+    tree_id: str | None,
+    current_tree: Tree | None,
+    session: Session,
+    tools_enabled: bool,
+) -> Agent:
+    return Agent(
+        resolve_llm(),
+        session,
+        tools=build_tools(
+            app,
+            tree_id=tree_id,
+            current_tree=current_tree,
+            tools_enabled=tools_enabled,
+        ),
+        max_turns=8,
+    )
+
+
+def build_tools(
+    app: FastAPI,
+    *,
+    tree_id: str | None,
+    current_tree: Tree | None,
+    tools_enabled: bool,
+) -> list:
+    if not tools_enabled or not app.state.tree_registry:
+        return []
+
+    tools = list(forest_tools(app, tree_id))
+    if tree_id and current_tree is not None:
+        tools.extend(tree_tools(app, tree_id))
+    return tools
+
+
+def question_needs_document_tools(
+    question: str,
+    *,
+    tree_id: str | None,
+    forest_count: int,
+) -> bool:
+    if forest_count == 0:
+        return False
+
+    text = question.strip().lower()
+    if not text:
+        return False
+
+    if any(pattern.search(text) for pattern in document_intent_patterns):
+        return True
+
+    if any(keyword in text for keyword in document_intent_keywords):
+        return True
+
+    return bool(
+        tree_id and len(text) <= 12 and text in {"总结", "总结一下", "概括", "讲讲"}
+    )
+
+
+def start_tool_call(
+    tool_calls: list[dict],
+    tool_call_ids: dict[str, str],
+    *,
+    raw_id: str,
+    name: str,
+    arguments: str,
+) -> dict:
+    synthetic_id = f"tc-{len(tool_calls)}"
+    if raw_id:
+        tool_call_ids[raw_id] = synthetic_id
+    item = {
+        "id": synthetic_id,
+        "name": name,
+        "arguments": arguments,
+    }
+    tool_calls.append(item)
+    return item
+
+
+def finish_tool_call(
+    tool_calls: list[dict],
+    tool_results: list[dict],
+    tool_call_ids: dict[str, str],
+    *,
+    raw_id: str,
+    name: str,
+    content: str,
+    ok: bool,
+) -> dict:
+    if len(content) > 8000:
+        content = content[:8000] + "\n... (truncated)"
+
+    if raw_id in tool_call_ids:
+        result_id = tool_call_ids[raw_id]
+    elif len(tool_results) < len(tool_calls):
+        result_id = tool_calls[len(tool_results)]["id"]
+        if raw_id:
+            tool_call_ids[raw_id] = result_id
+    else:
+        result_id = raw_id or f"tc-{len(tool_results)}"
+
+    item = {
+        "id": result_id,
+        "name": name,
+        "ok": bool(ok),
+        "content": content,
+    }
+    tool_results.append(item)
+    return item
 
 
 def resolve_llm():
@@ -218,14 +368,13 @@ def resolve_llm():
         )
 
     if requested.startswith("ollama/"):
-        model_id = requested.removeprefix("ollama/")
-        base_url = (
-            optional_setting_text(settings.base_url) or "http://127.0.0.1:11434"
-        ).rstrip("/")
-        if not base_url.endswith("/v1"):
-            base_url = f"{base_url}/v1"
-        return LLM(
-            model_id,
+        base_url = optional_setting_text(settings.base_url)
+        if base_url is not None:
+            base_url = base_url.rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url = f"{base_url}/v1"
+        return Ollama(
+            requested.removeprefix("ollama/"),
             base_url=base_url,
             apikey=optional_setting_text(settings.api_key) or "ollama",
         )
@@ -357,83 +506,59 @@ def forest_tools(app: FastAPI, current_tree_id: str | None) -> list:
     return [forest_catalog, find_sections, tree_node_content]
 
 
-def build_system_prompt(app: FastAPI, tree_id: str | None, tree: Tree | None) -> str:
+def build_system_prompt(
+    app: FastAPI,
+    tree_id: str | None,
+    tree: Tree | None,
+    tools_enabled: bool,
+) -> str:
     forest_count = len(app.state.tree_registry)
+    if forest_count == 0:
+        return (
+            "You are a general-purpose assistant. "
+            "No document knowledge base is attached to this chat. "
+            "Answer in the user's language."
+        )
+    if not tools_enabled:
+        attached_text = (
+            f"A document knowledge base `{tree.title}` is attached to this chat. "
+            if tree_id and tree is not None
+            else f"The server currently has {forest_count} document tree(s), but none is selected for this turn. "
+        )
+        return (
+            "You are a general-purpose assistant. "
+            + attached_text
+            + "The current question does not require document retrieval. "
+            "Answer directly in the user's language. "
+            "Only discuss document contents when the user clearly asks about the attached knowledge base, uploaded files, sections, nodes, or cited material."
+        )
     if tree_id and tree is not None:
         return (
             f"You are a document assistant for `{tree.title}` (tree_id={tree_id}). "
             f"The server currently has {forest_count} document tree(s). "
-            "Use tools for document-content questions. Use numeric dot paths like `0` "
+            "Use tools only when the answer depends on document content. Use numeric dot paths like `0` "
             "or `0.1`, never section titles, when navigating. Answer in the user's language."
         )
     return (
         "You are a document assistant over a forest of document trees. "
         f"The server currently has {forest_count} document tree(s). "
-        "When the user does not specify a knowledge base, inspect the forest first, "
+        "Use tools only when the answer depends on document content. "
+        "For document-content questions without a selected knowledge base, inspect the forest first, "
         "find relevant sections across trees, and ground the answer in retrieved content. "
         "Answer in the user's language."
     )
 
 
-def replay_history(session, turns: list[dict]) -> None:
+def replay_history(session, turns: list) -> None:
     for turn in turns:
-        role = turn.get("role")
-        content = turn.get("content") or turn.get("text") or ""
+        role = getattr(turn, "role", None)
+        content = getattr(turn, "content", "")
         if role in {"user", "assistant"} and content:
-            session.messages.append({"role": role, "content": content})
+            session += {"role": role, "content": content}
 
 
-def ensure_chat_session(
-    app: FastAPI,
-    *,
-    session_id: str | None,
-    tree_id: str | None,
-    title: str,
-) -> tuple[str, list[dict]]:
-    sid = session_id or uuid4().hex
-    if sid not in app.state.sessions:
-        now = now_iso()
-        app.state.sessions[sid] = {
-            "session_id": sid,
-            "tree_id": tree_id or "",
-            "title": title,
-            "created_at": now,
-            "updated_at": now,
-            "turns": [],
-        }
-    return sid, list(app.state.sessions[sid]["turns"])
-
-
-def append_chat_turn(
-    app: FastAPI,
-    session_id: str,
-    *,
-    question: str,
-    answer: str,
-    tool_calls: list[dict],
-    tool_results: list[dict],
-) -> None:
-    session = app.state.sessions[session_id]
-    session["updated_at"] = now_iso()
-    session["turns"].append(
-        {
-            "role": "user",
-            "content": question,
-            "created_at": now_iso(),
-        }
-    )
-    session["turns"].append(
-        {
-            "role": "assistant",
-            "content": answer,
-            "tool_calls": tool_calls,
-            "tool_results": tool_results,
-            "created_at": now_iso(),
-        }
-    )
-    store = app.state.registry_store
-    if store is not None:
-        store.save_session(session)
+def get_chat_sessions(app: FastAPI) -> ChatSessionService:
+    return app.state.chat_sessions
 
 
 def resolve_tree_path(tree: Tree, path: str) -> Tree | None:
@@ -462,12 +587,6 @@ def path_error(path: str) -> str:
     return (
         f"error: argument must be a numeric dot-path like '0' or '0.1' (got {path!r})"
     )
-
-
-def now_iso() -> str:
-    from datetime import UTC, datetime
-
-    return datetime.now(UTC).isoformat()
 
 
 def event_to_ndjson(event: dict) -> str:

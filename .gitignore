@@ -42,3 +42,6 @@ htmlcov/
 # Tooling
 .trae/
 resources/
+
+# Rust
+*/target/

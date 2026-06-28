@@ -3,6 +3,7 @@
 from treefyit.config.settings import (
     AppSettings,
     BuilderSettings,
+    ChatSettings,
     LLMSettings,
     MinerUSettings,
     StoreSettings,
@@ -14,6 +15,7 @@ from treefyit.config.settings import (
 __all__ = [
     "AppSettings",
     "BuilderSettings",
+    "ChatSettings",
     "LLMSettings",
     "MinerUSettings",
     "StoreSettings",

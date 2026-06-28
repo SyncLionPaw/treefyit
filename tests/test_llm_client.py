@@ -134,7 +134,7 @@ def test_complete_normalizes_blank_llm_settings(monkeypatch: pytest.MonkeyPatch)
         "treefyit.llm.client.get_settings",
         lambda: AppSettings(
             llm=LLMSettings(
-                model="ollama/gemma4:latest",
+                model="ollama/qwen3:1.7b",
                 api_key="   ",
                 base_url=" http://127.0.0.1:11434/ ",
             ),

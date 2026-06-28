@@ -34,10 +34,6 @@ class RegistryStore:
         return self.data_dir / "originals"
 
     @property
-    def sessions_dir(self) -> Path:
-        return self.data_dir / "sessions"
-
-    @property
     def queries_path(self) -> Path:
         return self.data_dir / "queries.jsonl"
 
@@ -50,16 +46,12 @@ class RegistryStore:
     def build_path(self, build_id: str) -> Path:
         return self.builds_dir / f"{build_id}.json"
 
-    def session_path(self, session_id: str) -> Path:
-        return self.sessions_dir / f"{session_id}.json"
-
     def ensure_dirs(self) -> None:
         self.trees_dir.mkdir(parents=True, exist_ok=True)
         self.indexes_dir.mkdir(parents=True, exist_ok=True)
         self.builds_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.originals_dir.mkdir(parents=True, exist_ok=True)
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
     def save_tree(self, tree: Tree) -> Path:
         self.ensure_dirs()
@@ -179,29 +171,6 @@ class RegistryStore:
         lines = self.queries_path.read_text(encoding="utf-8").splitlines()
         queries = [json.loads(line) for line in lines if line.strip()]
         return list(reversed(queries[-limit:]))
-
-    def save_session(self, session: dict) -> Path:
-        self.ensure_dirs()
-        path = self.session_path(str(session["session_id"]))
-        write_json_atomically(path, session)
-        return path
-
-    def load_sessions(self) -> dict[str, dict]:
-        if not self.sessions_dir.exists():
-            return {}
-
-        sessions: dict[str, dict] = {}
-        for path in sorted(self.sessions_dir.glob("*.json")):
-            session = json.loads(path.read_text(encoding="utf-8"))
-            sessions[str(session["session_id"])] = session
-        return sessions
-
-    def delete_session(self, session_id: str) -> bool:
-        path = self.session_path(session_id)
-        if not path.exists():
-            return False
-        path.unlink()
-        return True
 
     def load_trees(self) -> dict[str, Tree]:
         if not self.trees_dir.exists():

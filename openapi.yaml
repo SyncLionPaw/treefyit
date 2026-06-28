@@ -564,7 +564,7 @@ paths:
   /api/chat:
     post:
       tags: [chat]
-      summary: Stream a retrieval-grounded chat response for one tree
+      summary: Stream a chat response with optional tree or forest context
       operationId: chat
       requestBody:
         required: true
@@ -580,7 +580,7 @@ paths:
               schema:
                 type: string
         "400":
-          description: Missing bid or tree_id
+          description: Missing question
 
   /api/sessions:
     get:
@@ -588,11 +588,6 @@ paths:
       summary: List chat sessions
       operationId: listSessions
       parameters:
-        - name: bid
-          in: query
-          required: false
-          schema:
-            type: string
         - name: limit
           in: query
           required: false

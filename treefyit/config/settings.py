@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LLMSettings(BaseModel):
@@ -31,11 +32,24 @@ class StoreSettings(BaseModel):
     data_dir: Path = Path(".treefyit-store")
 
 
+class ChatSettings(BaseModel):
+    session_backend: Literal["memory", "json", "sqlite"] = "json"
+    session_sqlite_path: Path | None = None
+
+    @field_validator("session_sqlite_path", mode="before")
+    @classmethod
+    def empty_sqlite_path_as_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
 class AppSettings(BaseModel):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     mineru: MinerUSettings = Field(default_factory=MinerUSettings)
     builder: BuilderSettings = Field(default_factory=BuilderSettings)
     store: StoreSettings = Field(default_factory=StoreSettings)
+    chat: ChatSettings = Field(default_factory=ChatSettings)
 
 
 def get_config_paths() -> list[Path]:
@@ -89,6 +103,7 @@ def reload_settings() -> AppSettings:
 __all__ = [
     "AppSettings",
     "BuilderSettings",
+    "ChatSettings",
     "LLMSettings",
     "MinerUSettings",
     "StoreSettings",

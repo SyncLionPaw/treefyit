@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -13,6 +14,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -22,9 +24,17 @@ from treefyit.builder import (
     build_tree_from_file,
     build_tree_from_text,
 )
+from treefyit.builder.parse import parse_file_text
 from treefyit.chat import build_pagent_events
 from treefyit.chat.pagent import event_to_ndjson
-from treefyit.config import get_settings
+from treefyit.chat.session import (
+    ChatSessionService,
+    InMemoryChatSessionStorage,
+    JsonChatSessionStorage,
+    SqliteChatSessionStorage,
+)
+from treefyit.config import ChatSettings, get_settings
+from treefyit.logging_config import configure_treefyit_logging
 from treefyit.model.forest import Forest
 from treefyit.model.tree import Tree
 from treefyit.query.query import (
@@ -36,9 +46,17 @@ from treefyit.query.query import (
     content_to_search_text,
     score_nodes_bm25,
 )
+from treefyit.server.build_tasks import (
+    BuildTask,
+    BuildTaskExecutionError,
+    BuildTaskManager,
+)
 from treefyit.store import RegistryStore
 
+configure_treefyit_logging()
 logger = logging.getLogger("treefyit.server")
+
+LOCAL_DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 
 
 class BuildTreeRequest(BaseModel):
@@ -236,6 +254,43 @@ def build_file_sha256(data: bytes) -> str:
     return sha256(data).hexdigest()
 
 
+def file_parsed_text_preview(
+    data: bytes,
+    *,
+    filename: str,
+    content_type: str | None,
+) -> str | None:
+    media_type = (content_type or guess_type(filename)[0] or "").lower()
+    suffix = Path(filename).suffix.lower()
+    text_suffixes = {
+        ".css",
+        ".csv",
+        ".htm",
+        ".html",
+        ".json",
+        ".md",
+        ".mdx",
+        ".svg",
+        ".text",
+        ".toml",
+        ".tsv",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+    if not (
+        media_type.startswith("text/")
+        or media_type in {"application/json", "application/xml", "application/x-yaml"}
+        or suffix in text_suffixes
+    ):
+        return None
+    with NamedTemporaryFile(suffix=suffix or ".txt", delete=True) as temp_file:
+        temp_file.write(data)
+        temp_file.flush()
+        return parse_file_text(Path(temp_file.name))
+
+
 def build_sha256_index(
     build_history: dict[str, dict],
     tree_registry: dict[str, Tree],
@@ -272,6 +327,7 @@ def finalize_tree_build(
     *,
     filename: str,
     raw_text: str | None = None,
+    parsed_text: str | None = None,
     original_file: bytes | None = None,
     content_type: str | None = None,
     file_sha256: str | None = None,
@@ -288,6 +344,7 @@ def finalize_tree_build(
     build = build_history_record(
         response,
         raw_text=raw_text,
+        parsed_text=parsed_text,
         original_meta=original_meta,
         file_sha256=file_sha256,
     )
@@ -297,6 +354,14 @@ def finalize_tree_build(
     store = get_registry_store(app)
     if store is not None:
         store.save_build(build)
+    logger.info(
+        "build persisted tree_id=%s filename=%s has_original=%s storage_key=%s sha256=%s",
+        tree_id,
+        filename,
+        original_meta is not None,
+        build.get("storage_key"),
+        file_sha256,
+    )
     return response
 
 
@@ -337,6 +402,7 @@ def build_history_record(
     response: TreeBuildResponse,
     *,
     raw_text: str | None,
+    parsed_text: str | None,
     original_meta: dict | None,
     file_sha256: str | None,
 ) -> dict:
@@ -365,6 +431,8 @@ def build_history_record(
     }
     if raw_text is not None:
         build["raw_text"] = raw_text
+    if parsed_text is not None:
+        build["parsed_text"] = parsed_text
     return build
 
 
@@ -373,6 +441,7 @@ def build_compat_response(
     tree: Tree,
     *,
     raw_text: str | None = None,
+    parsed_text: str | None = None,
     error: str | None = None,
 ) -> dict:
     payload = response.model_dump()
@@ -395,6 +464,8 @@ def build_compat_response(
     )
     if raw_text is not None:
         payload["raw_text"] = raw_text
+    if parsed_text is not None:
+        payload["parsed_text"] = parsed_text
     return payload
 
 
@@ -460,6 +531,7 @@ def build_cached_compat_response(build: dict, tree: Tree) -> dict:
         response,
         tree,
         raw_text=build.get("raw_text"),
+        parsed_text=build.get("parsed_text"),
         error=build.get("error"),
     )
     payload["cached"] = True
@@ -606,59 +678,16 @@ def log_query(app: FastAPI, tool: str, tree_id: str, path: str, result: object) 
         store.append_query(query)
 
 
-def ensure_session(
-    app: FastAPI,
-    *,
-    session_id: str | None,
-    tree_id: str,
-    title: str,
-) -> dict:
-    if session_id and session_id in app.state.sessions:
-        return app.state.sessions[session_id]
-
-    sid = session_id or uuid4().hex
-    session = {
-        "session_id": sid,
-        "tree_id": tree_id,
-        "title": title,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-        "turns": [],
-    }
-    app.state.sessions[sid] = session
-    save_session(app, session)
-    return session
-
-
-def save_session(app: FastAPI, session: dict) -> None:
-    store = get_registry_store(app)
-    if store is not None:
-        store.save_session(session)
-
-
-def append_session_turn(
-    app: FastAPI,
-    session: dict,
-    *,
-    question: str,
-    answer: str,
-) -> None:
-    session["updated_at"] = now_iso()
-    session["turns"].append(
-        {
-            "role": "user",
-            "content": question,
-            "created_at": now_iso(),
-        }
-    )
-    session["turns"].append(
-        {
-            "role": "assistant",
-            "content": answer,
-            "created_at": now_iso(),
-        }
-    )
-    save_session(app, session)
+def create_chat_session_service(
+    store: RegistryStore | None,
+    settings: ChatSettings,
+) -> ChatSessionService:
+    if settings.session_backend == "memory" or store is None:
+        return ChatSessionService(InMemoryChatSessionStorage())
+    if settings.session_backend == "sqlite":
+        database_path = settings.session_sqlite_path or store.data_dir / "chat.sqlite3"
+        return ChatSessionService(SqliteChatSessionStorage(database_path))
+    return ChatSessionService(JsonChatSessionStorage(store.data_dir / "sessions"))
 
 
 def build_chat_answer(tree: Tree, question: str, hits: list[NodeQueryHit]) -> str:
@@ -673,7 +702,15 @@ def build_chat_answer(tree: Tree, question: str, hits: list[NodeQueryHit]) -> st
 
 
 def create_app(*, store: RegistryStore | None = None) -> FastAPI:
+    settings = get_settings()
     app = FastAPI(title="treefyit")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=LOCAL_DEV_ORIGIN_REGEX,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.registry_store = store
     app.state.tree_registry = store.load_trees() if store is not None else {}
     app.state.index_registry = (
@@ -687,7 +724,7 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
         app.state.tree_registry,
     )
     app.state.query_history = store.load_queries() if store is not None else []
-    app.state.sessions = store.load_sessions() if store is not None else {}
+    app.state.chat_sessions = create_chat_session_service(store, settings.chat)
     app.state.original_registry = {}
     app.state.forest_registry = {"default": Forest(forest_id="default", trees=[])}
     sync_default_forest(app)
@@ -709,13 +746,55 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
 
     @app.post("/api/trees", response_model=TreeBuildResponse)
     async def create_tree(request: BuildTreeRequest) -> TreeBuildResponse:
-        tree, filename = build_tree_with_text(request)
-        return finalize_tree_build(
-            app,
-            tree,
-            filename=filename,
-            raw_text=request.text,
+        endpoint = "/api/trees"
+        request_id = uuid4().hex[:8]
+        started_at = time.perf_counter()
+        logger.info(
+            "build received endpoint=%s request_id=%s filename=%s text_chars=%s summarize=%s refine_split_threshold=%s refine_max_parts=%s",
+            endpoint,
+            request_id,
+            request.filename,
+            len(request.text),
+            request.summarize,
+            request.refine_split_threshold,
+            request.refine_max_parts,
         )
+        try:
+            build_started_at = time.perf_counter()
+            tree, filename = build_tree_with_text(request)
+            build_ms = (time.perf_counter() - build_started_at) * 1000
+            finalize_started_at = time.perf_counter()
+            response = finalize_tree_build(
+                app,
+                tree,
+                filename=filename,
+                raw_text=request.text,
+                parsed_text=request.text,
+            )
+            finalize_ms = (time.perf_counter() - finalize_started_at) * 1000
+            total_ms = (time.perf_counter() - started_at) * 1000
+            logger.info(
+                "build completed endpoint=%s request_id=%s filename=%s tree_id=%s node_count=%s build_ms=%.2f finalize_ms=%.2f total_ms=%.2f",
+                endpoint,
+                request_id,
+                filename,
+                response.tree_id,
+                response.node_count,
+                build_ms,
+                finalize_ms,
+                total_ms,
+            )
+            return response
+        except Exception:
+            total_ms = (time.perf_counter() - started_at) * 1000
+            logger.exception(
+                "build failed endpoint=%s request_id=%s filename=%s total_ms=%.2f",
+                endpoint,
+                request_id,
+                request.filename,
+                total_ms,
+            )
+            raise
 
     @app.post("/api/trees/from-file", response_model=TreeBuildResponse)
     async def create_tree_from_file(
@@ -782,6 +861,11 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                 app,
                 tree,
                 filename=built_filename,
+                parsed_text=file_parsed_text_preview(
+                    file_bytes,
+                    filename=built_filename,
+                    content_type=content_type,
+                ),
                 original_file=file_bytes,
                 content_type=content_type,
                 file_sha256=file_sha256,
@@ -824,20 +908,62 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
     ) -> dict:
         content_type = request.headers.get("content-type", "")
         if "application/json" in content_type:
+            endpoint = "/api/build"
+            request_id = uuid4().hex[:8]
+            started_at = time.perf_counter()
             payload = await request.json()
             build_request = BuildTreeRequest.model_validate(payload)
-            tree, filename = build_tree_with_text(build_request)
-            response = finalize_tree_build(
-                app,
-                tree,
-                filename=filename,
-                raw_text=build_request.text,
+            logger.info(
+                "build received endpoint=%s request_id=%s filename=%s text_chars=%s summarize=%s refine_split_threshold=%s refine_max_parts=%s compat_mode=json",
+                endpoint,
+                request_id,
+                build_request.filename,
+                len(build_request.text),
+                build_request.summarize,
+                build_request.refine_split_threshold,
+                build_request.refine_max_parts,
             )
-            return build_compat_response(
-                response,
-                tree,
-                raw_text=build_request.text,
-            )
+            try:
+                build_started_at = time.perf_counter()
+                tree, filename = build_tree_with_text(build_request)
+                build_ms = (time.perf_counter() - build_started_at) * 1000
+                finalize_started_at = time.perf_counter()
+                response = finalize_tree_build(
+                    app,
+                    tree,
+                    filename=filename,
+                    raw_text=build_request.text,
+                    parsed_text=build_request.text,
+                )
+                finalize_ms = (time.perf_counter() - finalize_started_at) * 1000
+                total_ms = (time.perf_counter() - started_at) * 1000
+                logger.info(
+                    "build completed endpoint=%s request_id=%s filename=%s tree_id=%s node_count=%s build_ms=%.2f finalize_ms=%.2f total_ms=%.2f compat_mode=json",
+                    endpoint,
+                    request_id,
+                    filename,
+                    response.tree_id,
+                    response.node_count,
+                    build_ms,
+                    finalize_ms,
+                    total_ms,
+                )
+                return build_compat_response(
+                    response,
+                    tree,
+                    raw_text=build_request.text,
+                    parsed_text=build_request.text,
+                )
+            except Exception:
+                total_ms = (time.perf_counter() - started_at) * 1000
+                logger.exception(
+                    "build failed endpoint=%s request_id=%s filename=%s total_ms=%.2f compat_mode=json",
+                    endpoint,
+                    request_id,
+                    build_request.filename,
+                    total_ms,
+                )
+                raise
 
         if "multipart/form-data" in content_type:
             if file is None:
@@ -909,11 +1035,17 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                 build_started_at = time.perf_counter()
                 tree, built_filename = build_tree_with_file(file_bytes, form)
                 build_ms = (time.perf_counter() - build_started_at) * 1000
+                parsed_text = file_parsed_text_preview(
+                    file_bytes,
+                    filename=built_filename,
+                    content_type=content_type_header,
+                )
                 finalize_started_at = time.perf_counter()
                 response = finalize_tree_build(
                     app,
                     tree,
                     filename=built_filename,
+                    parsed_text=parsed_text,
                     original_file=file_bytes,
                     content_type=content_type_header,
                     file_sha256=file_sha256,
@@ -932,7 +1064,11 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                     finalize_ms,
                     total_ms,
                 )
-                return build_compat_response(response, tree)
+                return build_compat_response(
+                    response,
+                    tree,
+                    parsed_text=parsed_text,
+                )
             except Exception:
                 total_ms = (time.perf_counter() - started_at) * 1000
                 logger.exception(
@@ -978,12 +1114,29 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
 
         async def events():
             stream_started_at = time.time()
+            trace_seq = 0
 
             def line(payload: dict) -> str:
+                nonlocal trace_seq
+                trace_seq += 1
+                payload.setdefault("request_id", request_id)
+                payload.setdefault("trace_seq", trace_seq)
+                payload.setdefault("timestamp", datetime.now(UTC).isoformat())
                 payload.setdefault(
                     "elapsed_sec", round(time.time() - stream_started_at, 3)
                 )
                 return json.dumps(payload, ensure_ascii=False) + "\n"
+
+            async def yield_task_events(
+                task: asyncio.Task[dict],
+                queue: asyncio.Queue[dict],
+            ):
+                while not task.done() or not queue.empty():
+                    try:
+                        payload = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    except TimeoutError:
+                        continue
+                    yield line(payload)
 
             yield line(
                 {
@@ -1019,37 +1172,106 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                         }
                     )
                     return
-                yield line({"type": "progress", "stage": "build"})
-                form = FileBuildForm(
-                    filename=filename,
-                    summarize=summarize,
-                    refine_split_threshold=refine_split_threshold,
-                    refine_max_parts=refine_max_parts,
+
+                task_queue: asyncio.Queue[dict] = asyncio.Queue()
+
+                async def emit_task_event(payload: dict) -> None:
+                    event_type = str(payload.get("type") or "")
+                    stage = str(payload.get("stage") or "build")
+                    message = str(payload.get("description") or stage)
+                    await task_queue.put(
+                        {
+                            **payload,
+                            "type": "progress"
+                            if event_type in {"task_start", "task_done"}
+                            else event_type,
+                            "stage": stage,
+                            "message": message,
+                        }
+                    )
+
+                def prepare_form(_context: dict) -> FileBuildForm:
+                    return FileBuildForm(
+                        filename=filename,
+                        summarize=summarize,
+                        refine_split_threshold=refine_split_threshold,
+                        refine_max_parts=refine_max_parts,
+                    )
+
+                def run_builder(context: dict) -> tuple[Tree, str]:
+                    return build_tree_with_file(file_bytes, context["prepare"])
+
+                def run_finalize(context: dict) -> TreeBuildResponse:
+                    tree, built_filename = context["build"]
+                    return finalize_tree_build(
+                        app,
+                        tree,
+                        filename=built_filename,
+                        parsed_text=file_parsed_text_preview(
+                            file_bytes,
+                            filename=built_filename,
+                            content_type=content_type,
+                        ),
+                        original_file=file_bytes,
+                        content_type=content_type,
+                        file_sha256=file_sha256,
+                    )
+
+                tasks = [
+                    BuildTask(
+                        "prepare",
+                        prepare_form,
+                        description="准备构建参数",
+                    ),
+                    BuildTask(
+                        "build",
+                        run_builder,
+                        depends_on=("prepare",),
+                        description="解析文档并生成知识树",
+                    ),
+                    BuildTask(
+                        "finalize",
+                        run_finalize,
+                        depends_on=("build",),
+                        description="保存构建结果和原始文件",
+                    ),
+                ]
+                yield line(
+                    {
+                        "type": "task_plan",
+                        "stage": "task_plan",
+                        "tasks": [
+                            {
+                                "task": task.name,
+                                "stage": task.name,
+                                "description": task.description,
+                                "depends_on": list(task.depends_on),
+                                "status": "pending",
+                            }
+                            for task in tasks
+                        ],
+                    }
                 )
-                build_started_at = time.perf_counter()
-                tree, built_filename = build_tree_with_file(file_bytes, form)
-                build_ms = (time.perf_counter() - build_started_at) * 1000
-                finalize_started_at = time.perf_counter()
-                result = finalize_tree_build(
-                    app,
-                    tree,
-                    filename=built_filename,
-                    original_file=file_bytes,
-                    content_type=content_type,
-                    file_sha256=file_sha256,
+
+                manager = BuildTaskManager(logger=logger)
+                managed_build = asyncio.create_task(
+                    manager.run(tasks, on_event=emit_task_event)
                 )
-                finalize_ms = (time.perf_counter() - finalize_started_at) * 1000
+                async for task_event in yield_task_events(managed_build, task_queue):
+                    yield task_event
+
+                context = await managed_build
+                result = context["finalize"]
+                _tree, built_filename = context["build"]
                 total_ms = (time.perf_counter() - started_at) * 1000
                 logger.info(
-                    "upload completed endpoint=%s request_id=%s filename=%s tree_id=%s node_count=%s read_ms=%.2f build_ms=%.2f finalize_ms=%.2f total_ms=%.2f",
+                    "upload completed endpoint=%s request_id=%s filename=%s tree_id=%s node_count=%s read_ms=%.2f total_ms=%.2f",
                     endpoint,
                     request_id,
                     built_filename,
                     result.tree_id,
                     result.node_count,
                     read_ms,
-                    build_ms,
-                    finalize_ms,
                     total_ms,
                 )
                 yield line(
@@ -1058,7 +1280,25 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
                         "stage": "done",
                         "bid": result.tree_id,
                         "cached": False,
-                        "result": result.model_dump(),
+                        "result": get_build_record(app, result.tree_id),
+                    }
+                )
+            except BuildTaskExecutionError as exc:
+                total_ms = (time.perf_counter() - started_at) * 1000
+                logger.exception(
+                    "upload task failed endpoint=%s request_id=%s filename=%s task=%s content_type=%s total_ms=%.2f",
+                    endpoint,
+                    request_id,
+                    filename,
+                    exc.task_name,
+                    content_type or "application/octet-stream",
+                    total_ms,
+                )
+                yield line(
+                    {
+                        "type": "error",
+                        "stage": "error",
+                        "message": str(exc),
                     }
                 )
             except Exception as exc:
@@ -1086,7 +1326,11 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
         builds = list(app.state.build_history.values())
         builds.sort(key=lambda build: build["created_at"], reverse=True)
         return [
-            {key: value for key, value in build.items() if key != "raw_text"}
+            {
+                key: value
+                for key, value in build.items()
+                if key not in {"raw_text", "parsed_text"}
+            }
             for build in builds
         ]
 
@@ -1305,39 +1549,24 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
             ):
                 yield event_to_ndjson(event)
 
-        return StreamingResponse(events(), media_type="text/event-stream")
+        return StreamingResponse(events(), media_type="application/x-ndjson")
 
     @app.get("/api/sessions")
-    async def list_sessions(bid: str | None = None, limit: int = 100) -> dict:
-        sessions = list(app.state.sessions.values())
-        if bid is not None:
-            sessions = [session for session in sessions if session["tree_id"] == bid]
-        sessions.sort(key=lambda session: session["updated_at"], reverse=True)
-        return {
-            "sessions": [
-                {
-                    key: value
-                    for key, value in session.items()
-                    if key not in {"turns", "model"}
-                }
-                for session in sessions[:limit]
-            ]
-        }
+    async def list_sessions(limit: int = 100) -> dict:
+        sessions = app.state.chat_sessions.list(limit=limit)
+        return {"sessions": [session.summary() for session in sessions]}
 
     @app.get("/api/sessions/{sid}/turns")
     async def session_turns(sid: str, limit: int = 200) -> dict:
-        session = app.state.sessions.get(sid)
-        if session is None:
+        turns = app.state.chat_sessions.get_turns(sid, limit=limit)
+        if turns is None:
             raise HTTPException(status_code=404, detail=f"unknown session_id: {sid}")
-        return {"session_id": sid, "turns": session["turns"][-limit:]}
+        return {"session_id": sid, "turns": [turn.model_dump() for turn in turns]}
 
     @app.delete("/api/sessions/{sid}")
     async def delete_session(sid: str) -> dict:
-        existed = app.state.sessions.pop(sid, None) is not None
-        store = get_registry_store(app)
-        if store is not None:
-            existed = store.delete_session(sid) or existed
-        return {"deleted": existed, "session_id": sid}
+        deleted = app.state.chat_sessions.delete(sid)
+        return {"deleted": deleted, "session_id": sid}
 
     return app
 
@@ -1358,6 +1587,7 @@ __all__ = [
     "TreeSummaryResponse",
     "app",
     "build_child_path",
+    "create_chat_session_service",
     "build_default_forest",
     "build_forest_summary",
     "build_index_meta_response",

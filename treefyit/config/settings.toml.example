@@ -1,5 +1,5 @@
 [llm]
-model = "ollama/gemma4:latest"
+model = "ollama/qwen3:1.7b"
 api_key = ""
 base_url = "http://127.0.0.1:11434"
 temperature = 0.0
@@ -12,3 +12,7 @@ model = ""
 
 [store]
 data_dir = ".treefyit-store"
+
+[chat]
+session_backend = "json"
+# session_sqlite_path = ".treefyit-store/chat_sessions.sqlite3"

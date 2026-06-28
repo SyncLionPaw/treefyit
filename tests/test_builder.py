@@ -15,6 +15,7 @@ from treefyit.builder import (
     build_tree_from_text,
 )
 from treefyit.builder import source
+from treefyit.builder.parse import parse_html_sections
 from treefyit.model.tree import LeafType, TextContent, Tree, UrlContent
 
 
@@ -79,6 +80,36 @@ def test_build_tree_from_file_supports_markdown_and_html():
     assert markdown_tree.children
     assert html_tree.node_id == "tea"
     assert html_tree.children
+
+
+def test_html_parser_extracts_script_rendered_react_content(tmp_path):
+    html = """
+    <html>
+      <head><title>Rendered App</title></head>
+      <body>
+        <div id="root"></div>
+        <script>
+          function App(){return (0,E.jsxs)(`main`,{"data-source":`src/index.tsx:1:1`,children:[
+            (0,E.jsx)(`h1`,{"data-source":`src/index.tsx:10:4`,children:`Product Guide`}),
+            (0,E.jsx)(We,{"data-source":`src/index.tsx:20:4`,id:`overview`,eyebrow:`01 / Overview`,title:`Overview`,desc:`What this product does.`}),
+            (0,E.jsx)(D,{"data-source":`src/index.tsx:25:8`,title:`Key Flow`,children:(0,E.jsx)(`p`,{"data-source":`src/index.tsx:26:10`,children:`Upload, parse, query.`})})
+          ]})}
+        </script>
+      </body>
+    </html>
+    """
+    path = tmp_path / "app.html"
+    path.write_text(html, encoding="utf-8")
+
+    sections = parse_html_sections(path)
+
+    assert [section["title"] for section in sections] == [
+        "Product Guide",
+        "Overview",
+        "Key Flow",
+    ]
+    assert "What this product does." in sections[1]["text"]
+    assert "Upload, parse, query." in sections[2]["text"]
 
 
 def test_build_tree_from_file_rejects_zip():

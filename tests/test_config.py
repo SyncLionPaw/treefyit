@@ -14,7 +14,7 @@ def test_reload_settings_reads_toml_config(monkeypatch, tmp_path: Path):
         "\n".join(
             [
                 "[llm]",
-                'model = "ollama/gemma4:latest"',
+                'model = "ollama/qwen3:1.7b"',
                 'api_key = "demo-key"',
                 'base_url = "http://127.0.0.1:11434"',
                 "max_tokens = 1024",
@@ -36,7 +36,7 @@ def test_reload_settings_reads_toml_config(monkeypatch, tmp_path: Path):
     settings = reload_settings()
 
     assert isinstance(settings.llm, LLMSettings)
-    assert settings.llm.model == "ollama/gemma4:latest"
+    assert settings.llm.model == "ollama/qwen3:1.7b"
     assert settings.llm.api_key == "demo-key"
     assert settings.llm.base_url == "http://127.0.0.1:11434"
     assert settings.llm.max_tokens == 1024

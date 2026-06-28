@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 import pytest
 
@@ -16,6 +18,28 @@ def test_health_endpoint_returns_ok():
         "status": "ok",
         "service": "treefyit",
     }
+
+
+def test_local_dev_cors_allows_vite_origins():
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/health",
+        headers={"Origin": "http://127.0.0.1:5173"},
+    )
+    preflight = client.options(
+        "/api/chat",
+        headers={
+            "Origin": "http://localhost:5175",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "http://localhost:5175"
+    assert "POST" in preflight.headers["access-control-allow-methods"]
 
 
 def test_resolve_llm_uses_configured_deepseek_credentials(
@@ -69,7 +93,7 @@ def test_resolve_llm_normalizes_blank_ollama_api_key(monkeypatch: pytest.MonkeyP
 
     captured = {}
 
-    class FakeLLM:
+    class FakeOllama:
         def __init__(self, model_id, base_url=None, apikey=None, request_kwargs=None):
             captured["model_id"] = model_id
             captured["base_url"] = base_url
@@ -80,7 +104,7 @@ def test_resolve_llm_normalizes_blank_ollama_api_key(monkeypatch: pytest.MonkeyP
         "get_settings",
         lambda: AppSettings(
             llm=LLMSettings(
-                model="ollama/gemma4:latest",
+                model="ollama/qwen3:1.7b",
                 api_key="   ",
                 base_url=" http://127.0.0.1:11434/ ",
             ),
@@ -88,11 +112,11 @@ def test_resolve_llm_normalizes_blank_ollama_api_key(monkeypatch: pytest.MonkeyP
             builder=BuilderSettings(),
         ),
     )
-    monkeypatch.setattr(pagent, "LLM", FakeLLM)
+    monkeypatch.setattr(pagent, "Ollama", FakeOllama)
 
     pagent.resolve_llm()
 
-    assert captured["model_id"] == "gemma4:latest"
+    assert captured["model_id"] == "qwen3:1.7b"
     assert captured["base_url"] == "http://127.0.0.1:11434/v1"
     assert captured["apikey"] == "ollama"
 
@@ -148,13 +172,14 @@ def test_post_build_keeps_old_path_compatible():
 def test_post_trees_from_file_builds_and_registers_tree():
     app = create_app()
     client = TestClient(app)
+    file_bytes = b"# Upload\n\nFile body\n\n## Section\n\nMore text."
 
     response = client.post(
         "/api/trees/from-file",
         files={
             "file": (
                 "upload.md",
-                b"# Upload\n\nFile body\n\n## Section\n\nMore text.",
+                file_bytes,
                 "text/markdown",
             )
         },
@@ -167,6 +192,10 @@ def test_post_trees_from_file_builds_and_registers_tree():
     assert payload["node_count"] == 3
     assert payload["max_depth"] == 2
     assert payload["tree_id"] in app.state.tree_registry
+
+    detail_response = client.get(f"/api/build/{payload['tree_id']}")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["parsed_text"] == file_bytes.decode()
 
 
 def test_post_trees_from_file_deduplicates_by_file_sha256():
@@ -192,19 +221,44 @@ def test_post_trees_from_file_deduplicates_by_file_sha256():
 
     detail_response = client.get(f"/api/build/{first_payload['tree_id']}")
     assert detail_response.status_code == 200
-    assert detail_response.json()["sha256"] == app.state.build_history[first_payload["tree_id"]]["sha256"]
+    assert (
+        detail_response.json()["sha256"]
+        == app.state.build_history[first_payload["tree_id"]]["sha256"]
+    )
+
+
+def test_file_build_stores_parsed_text_for_html():
+    app = create_app()
+    client = TestClient(app)
+    html = b"<html><body><h1>Title</h1><p>Body text.</p></body></html>"
+
+    response = client.post(
+        "/api/trees/from-file",
+        files={"file": ("page.html", html, "text/html")},
+    )
+
+    assert response.status_code == 200
+    tree_id = response.json()["tree_id"]
+    detail_response = client.get(f"/api/build/{tree_id}")
+
+    assert detail_response.status_code == 200
+    parsed_text = detail_response.json()["parsed_text"]
+    assert "Title" in parsed_text
+    assert "Body text." in parsed_text
+    assert "<h1>" not in parsed_text
 
 
 def test_post_build_accepts_multipart_for_legacy_compatibility():
     app = create_app()
     client = TestClient(app)
+    file_bytes = b"# Legacy Upload\n\nBody"
 
     response = client.post(
         "/api/build",
         files={
             "file": (
                 "legacy-upload.md",
-                b"# Legacy Upload\n\nBody",
+                file_bytes,
                 "text/markdown",
             )
         },
@@ -219,6 +273,7 @@ def test_post_build_accepts_multipart_for_legacy_compatibility():
     assert payload["title"] == "legacy-upload.md"
     assert payload["root_count"] == 1
     assert payload["tree_id"] in app.state.tree_registry
+    assert payload["parsed_text"] == file_bytes.decode()
 
 
 def test_post_build_multipart_returns_cached_result_for_duplicate_file():
@@ -621,11 +676,13 @@ def test_history_and_build_detail_are_recorded_for_text_build():
     assert history_response.json()[0]["id"] == tree_id
     assert history_response.json()[0]["filename"] == "history.md"
     assert "raw_text" not in history_response.json()[0]
+    assert "parsed_text" not in history_response.json()[0]
 
     assert detail_response.status_code == 200
     detail = detail_response.json()
     assert detail["id"] == tree_id
     assert detail["raw_text"] == "# History\n\nBody"
+    assert detail["parsed_text"] == "# History\n\nBody"
     assert detail["tree"]["title"] == "history.md"
 
 
@@ -682,13 +739,14 @@ def test_get_build_file_supports_unicode_filename_in_content_disposition():
 
 def test_stream_build_returns_ndjson_events():
     client = TestClient(create_app())
+    file_bytes = b"# Stream\n\nBody"
 
     response = client.post(
         "/api/build/stream",
         files={
             "file": (
                 "stream.md",
-                b"# Stream\n\nBody",
+                file_bytes,
                 "text/markdown",
             )
         },
@@ -697,7 +755,10 @@ def test_stream_build_returns_ndjson_events():
     assert response.status_code == 200
     events = [line for line in response.text.splitlines() if line]
     assert '"type": "start"' in events[0]
+    assert any('"task": "build"' in event for event in events)
+    assert any('"task": "finalize"' in event for event in events)
     assert any('"type": "done"' in event for event in events)
+    assert json.loads(events[-1])["result"]["parsed_text"] == file_bytes.decode()
 
 
 def test_file_build_dedup_survives_restart(tmp_path):
@@ -751,15 +812,6 @@ def test_query_history_and_stats_are_recorded():
 def test_chat_creates_session_and_streams_events(monkeypatch):
     from treefyit.chat import pagent
 
-    class TextDelta:
-        def __init__(self, text):
-            self.text = text
-
-    class RunEnd:
-        def __init__(self, content):
-            self.content = content
-            self.usage = None
-
     class FakeAgent:
         initialized = False
         tool_count = 0
@@ -773,8 +825,9 @@ def test_chat_creates_session_and_streams_events(monkeypatch):
             FakeAgent.tool_count = len(self.tools)
 
         async def arun_events(self, question):
-            yield TextDelta(f"answer from pagent: {question}")
-            yield RunEnd(f"answer from pagent: {question}")
+            yield pagent.TextDelta(f"answer from pagent: {question}")
+            yield pagent.TurnEnd(0, True)
+            yield pagent.RunEnd(f"answer from pagent: {question}")
 
     monkeypatch.setattr(pagent, "Agent", FakeAgent)
     monkeypatch.setattr(pagent, "resolve_llm", lambda: object())
@@ -804,29 +857,25 @@ def test_chat_creates_session_and_streams_events(monkeypatch):
     assert FakeAgent.tool_count > 0
     assert any('"type": "start"' in event for event in events)
     assert any("answer from pagent" in event for event in events)
+    assert any('"type": "turn_end"' in event for event in events)
     assert any('"type": "done"' in event for event in events)
 
-    sessions_response = client.get("/api/sessions", params={"bid": tree_id})
+    sessions_response = client.get("/api/sessions")
     session_id = sessions_response.json()["sessions"][0]["session_id"]
     turns_response = client.get(f"/api/sessions/{session_id}/turns")
     delete_response = client.delete(f"/api/sessions/{session_id}")
 
     assert turns_response.status_code == 200
     assert len(turns_response.json()["turns"]) == 2
+    assert turns_response.json()["turns"][1]["assistant_events"] == [
+        {"type": "text", "text": "answer from pagent: content", "seq": 1}
+    ]
+    assert "tree_id" not in sessions_response.json()["sessions"][0]
     assert delete_response.json() == {"deleted": True, "session_id": session_id}
 
 
 def test_chat_without_selected_tree_uses_forest_context(monkeypatch):
     from treefyit.chat import pagent
-
-    class TextDelta:
-        def __init__(self, text):
-            self.text = text
-
-    class RunEnd:
-        def __init__(self, content):
-            self.content = content
-            self.usage = None
 
     captured = {}
 
@@ -839,8 +888,8 @@ def test_chat_without_selected_tree_uses_forest_context(monkeypatch):
             captured["system_prompt"] = session.messages[0]["content"]
 
         async def arun_events(self, question):
-            yield TextDelta(f"forest answer: {question}")
-            yield RunEnd(f"forest answer: {question}")
+            yield pagent.TextDelta(f"forest answer: {question}")
+            yield pagent.RunEnd(f"forest answer: {question}")
 
     monkeypatch.setattr(pagent, "Agent", FakeAgent)
     monkeypatch.setattr(pagent, "resolve_llm", lambda: object())
@@ -870,32 +919,96 @@ def test_chat_without_selected_tree_uses_forest_context(monkeypatch):
     )
 
 
+def test_chat_with_forest_answers_general_question_without_tools(monkeypatch):
+    from treefyit.chat import pagent
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, llm, session, tools=None, max_turns=8):
+            captured["tool_names"] = [
+                getattr(tool, "name", getattr(tool, "__name__", ""))
+                for tool in (tools or [])
+            ]
+            captured["system_prompt"] = session.messages[0]["content"]
+
+        async def arun_events(self, question):
+            yield pagent.TextDelta(f"direct answer: {question}")
+            yield pagent.RunEnd(f"direct answer: {question}")
+
+    monkeypatch.setattr(pagent, "Agent", FakeAgent)
+    monkeypatch.setattr(pagent, "resolve_llm", lambda: object())
+
+    app = create_app()
+    client = TestClient(app)
+    client.post(
+        "/api/trees",
+        json={
+            "text": "# Forest\n\nShared body",
+            "filename": "forest.md",
+        },
+    )
+
+    chat_response = client.post("/api/chat", json={"question": "你好"})
+
+    assert chat_response.status_code == 200
+    assert "direct answer: 你好" in chat_response.text
+    assert captured["tool_names"] == []
+    assert "general-purpose assistant" in captured["system_prompt"]
+
+
+def test_chat_with_selected_tree_answers_general_question_without_tools(monkeypatch):
+    from treefyit.chat import pagent
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, llm, session, tools=None, max_turns=8):
+            captured["tool_names"] = [
+                getattr(tool, "name", getattr(tool, "__name__", ""))
+                for tool in (tools or [])
+            ]
+            captured["system_prompt"] = session.messages[0]["content"]
+
+        async def arun_events(self, question):
+            yield pagent.TextDelta(f"direct answer: {question}")
+            yield pagent.RunEnd(f"direct answer: {question}")
+
+    monkeypatch.setattr(pagent, "Agent", FakeAgent)
+    monkeypatch.setattr(pagent, "resolve_llm", lambda: object())
+
+    app = create_app()
+    client = TestClient(app)
+    build_response = client.post(
+        "/api/trees",
+        json={
+            "text": "# Chat\n\nAnswerable content",
+            "filename": "chat.md",
+        },
+    )
+    tree_id = build_response.json()["tree_id"]
+
+    chat_response = client.post(
+        "/api/chat",
+        json={"bid": tree_id, "question": "你好"},
+    )
+
+    assert chat_response.status_code == 200
+    assert "direct answer: 你好" in chat_response.text
+    assert captured["tool_names"] == []
+    assert "does not require document retrieval" in captured["system_prompt"]
+
+
 def test_chat_falls_back_to_tool_summary_when_model_returns_no_text(monkeypatch):
     from treefyit.chat import pagent
 
-    class ToolCallBegin:
-        def __init__(self, name, arguments="", id=""):
-            self.name = name
-            self.arguments = arguments
-            self.id = id
-
-    class ToolResult:
-        def __init__(self, name, content, ok=True, tool_call_id=""):
-            self.name = name
-            self.content = content
-            self.ok = ok
-            self.tool_call_id = tool_call_id
-
-    class RunEnd:
-        def __init__(self, content=""):
-            self.content = content
-            self.usage = None
-
     class FakeAgent:
         async def arun_events(self, question):
-            yield ToolCallBegin("forest_catalog")
-            yield ToolResult("forest_catalog", "document: chat.md\nnodes: 3")
-            yield RunEnd("")
+            yield pagent.ToolCallBegin("call-1", "forest_catalog", "")
+            yield pagent.ToolResult(
+                "call-1", "forest_catalog", "document: chat.md\nnodes: 3"
+            )
+            yield pagent.RunEnd("")
 
         def __init__(self, llm, session, tools=None, max_turns=8):
             self.llm = llm
@@ -930,7 +1043,26 @@ def test_chat_falls_back_to_tool_summary_when_model_returns_no_text(monkeypatch)
     assert "forest_catalog" in chat_response.text
 
 
-def test_chat_without_knowledge_base_streams_error():
+def test_chat_without_knowledge_base_uses_general_context(monkeypatch):
+    from treefyit.chat import pagent
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, llm, session, tools=None, max_turns=8):
+            captured["tool_names"] = [
+                getattr(tool, "name", getattr(tool, "__name__", ""))
+                for tool in (tools or [])
+            ]
+            captured["system_prompt"] = session.messages[0]["content"]
+
+        async def arun_events(self, question):
+            yield pagent.TextDelta(f"general answer: {question}")
+            yield pagent.RunEnd(f"general answer: {question}")
+
+    monkeypatch.setattr(pagent, "Agent", FakeAgent)
+    monkeypatch.setattr(pagent, "resolve_llm", lambda: object())
+
     client = TestClient(create_app())
 
     chat_response = client.post(
@@ -939,4 +1071,6 @@ def test_chat_without_knowledge_base_streams_error():
     )
 
     assert chat_response.status_code == 200
-    assert "no knowledge bases available" in chat_response.text
+    assert "general answer: hello" in chat_response.text
+    assert captured["tool_names"] == []
+    assert "general-purpose assistant" in captured["system_prompt"]

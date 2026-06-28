@@ -1518,16 +1518,16 @@ wheels = [
 
 [[package]]
 name = "pagent"
-version = "0.2.0"
+version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docstring-parser" },
     { name = "openai" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/5b/5d89d1db88a10bb622eaca344c8bbd481431db00475f4c5586d5efcbdd79/pagent-0.2.0.tar.gz", hash = "sha256:91785d7bfb35e5386a4f37c226976a99a460e36c5a03615383a2d1894bc6e91d", size = 18800, upload-time = "2026-05-27T09:55:20.649Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/63/61/f6c329047d5f950bb88422077a577bc11f97857151d9b3e84faf781c4a38/pagent-0.3.2.tar.gz", hash = "sha256:ad805c7ab39e54c30785c0234dc67df21f0bffbbd7a740cc58ce51a37064ba46", size = 19020, upload-time = "2026-06-26T17:47:46.857Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dd/58/c7f9d82976d97c4b8c8cce3f8f422f85cfd4d33453880b213e81c046cc06/pagent-0.2.0-py3-none-any.whl", hash = "sha256:39db9055c6bbcace4cd5e512d5d9f37a741ac645f4ffdcef064b26d9e1e4d086", size = 22955, upload-time = "2026-05-27T09:55:19.088Z" },
+    { url = "https://files.pythonhosted.org/packages/32/fa/d0ea79826db3bbac9e5131d0dd0890b8788bf16a23896f5c032b64ebbc4d/pagent-0.3.2-py3-none-any.whl", hash = "sha256:117166d1ab36cd7a745e957b3f9d8eb5540af52ce171e0674d920db6a37f7ed2", size = 23021, upload-time = "2026-06-26T17:47:45.46Z" },
 ]
 
 [[package]]
@@ -2553,7 +2553,7 @@ requires-dist = [
     { name = "lxml", specifier = ">=4.9" },
     { name = "markdown-it-py", specifier = ">=3.0" },
     { name = "markitdown", extras = ["all"], specifier = ">=0.1.0" },
-    { name = "pagent", specifier = ">=0.2.0" },
+    { name = "pagent", specifier = "==0.3.2" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "python-magic", specifier = ">=0.4.27" },

@@ -13,7 +13,7 @@ dependencies = [
     "uvicorn>=0.20",
     "python-multipart>=0.0.5",
     "requests>=2.28",
-    "pagent>=0.2.0",
+    "pagent==0.3.2",
     "rank-bm25>=0.2.2",
     "markitdown[all]>=0.1.0",
     "markdown-it-py>=3.0",
@@ -21,6 +21,9 @@ dependencies = [
     "lxml>=4.9",
     "jieba>=0.42.1",
 ]
+
+[project.scripts]
+treefyit = "treefyit.cli:main"
 
 [dependency-groups]
 dev = [

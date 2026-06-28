@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import uvicorn
-
-from treefyit.server.app import app
+from treefyit.cli import main as run_cli
 
 
 def main() -> None:
-    uvicorn.run(app, host="0.0.0.0", port=8765)
+    run_cli()
 
 
 if __name__ == "__main__":
