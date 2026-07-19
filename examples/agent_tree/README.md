@@ -16,6 +16,15 @@ uv run python examples/agent_tree/demo.py
 
 This indexes the markdown into `.tree-library/trees/white-tea.json`, then runs the same search tools a Q&A agent would use.
 
+## Proof scripts (tool-level end-to-end)
+
+```bash
+uv run python examples/agent_tree/prove_flow.py
+uv run python examples/agent_tree/prove_harness.py
+```
+
+These execute the real builder/search `FunctionTool`s (and local-backend `Runner.create`) without an LLM key, and write artifacts under `/opt/cursor/artifacts/agent_tree_proof/`.
+
 ## Live agents
 
 ```bash
