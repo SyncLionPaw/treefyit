@@ -1,15 +1,17 @@
-"""Tree harness tools —— host 进程内的树 CRUD，供 ``Runner.create(tools=...)`` 注入。
+"""Tree harness tools —— host 进程内 CRUD / 持久化 / 查询。
 
-与 ``pagentv4.tools.HARNESS_WEB_TOOLS`` 同类：不进 sandbox，由 Runner 与
-local-backend 沙箱工具合并后交给模型。推荐入口见 ``core.harness.open_runner``。
+供 ``Runner.create(tools=...)`` 注入；与 sandbox 文件工具配合：
+读 ``source.md`` → 建树 → ``save_tree`` 落盘 → 他人 ``load_tree`` / ``search_library``。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from pagentv4 import FunctionTool, ToolOutput, tool
 
+from .md import markdown_to_tree
 from .ops import (
     create_node,
     get_node,
@@ -21,6 +23,8 @@ from .ops import (
     view_node,
     view_node_detail,
 )
+from .query import format_hits, search_store, search_tree
+from .store import TreeStore
 from .tree import NodeKind, TreeNode
 
 
@@ -37,9 +41,12 @@ def _parse_kind(kind: str | None) -> NodeKind | None:
 
 @dataclass
 class TreeSession:
-    """持有一棵可变更的工作树；tool 调用会更新 ``root``。"""
+    """工作树 + 可选持久化库。"""
 
     root: TreeNode
+    store: TreeStore | None = None
+    tree_id: str | None = None
+    source_md_path: Path | None = None
     history: list[TreeNode] = field(default_factory=list)
 
     def snapshot(self) -> None:
@@ -51,8 +58,12 @@ class TreeSession:
         self.root = self.history.pop()
         return True
 
+    def require_store(self) -> TreeStore:
+        if self.store is None:
+            raise ValueError("no tree store configured")
+        return self.store
+
     def build_tools(self) -> list[FunctionTool]:
-        """返回可交给 ``AgentCore(..., tools=...)`` / ``Runner`` 的 tool 列表。"""
         session = self
 
         @tool()
@@ -223,6 +234,131 @@ class TreeSession:
                 view_node(session.root, new_parent_id, depth=1)
             )
 
+        @tool()
+        def seed_from_markdown(path: str | None = None) -> ToolOutput:
+            """Build a heading tree from a markdown file into the working tree.
+
+            Args:
+                path: Host markdown path. Defaults to the session source markdown.
+            """
+            try:
+                md_path = Path(path) if path else session.source_md_path
+                if md_path is None:
+                    raise ValueError("markdown path not provided")
+                md_path = md_path.expanduser().resolve()
+                if not md_path.is_file():
+                    raise FileNotFoundError(f"markdown not found: {md_path}")
+                text = md_path.read_text(encoding="utf-8")
+                seeded = markdown_to_tree(
+                    text,
+                    root_id=session.root.id,
+                    root_title=session.root.title or md_path.stem,
+                )
+            except (OSError, ValueError) as exc:
+                return ToolOutput.fail(str(exc))
+            session.snapshot()
+            session.root = seeded
+            session.source_md_path = md_path
+            return ToolOutput.succeed(
+                "seeded from markdown\n" + view_node(session.root, session.root.id, depth=2)
+            )
+
+        @tool()
+        def save_tree(tree_id: str | None = None, title: str | None = None) -> ToolOutput:
+            """Persist the working tree to the library for later load/search.
+
+            Args:
+                tree_id: Optional id; defaults to current session tree_id or a new id.
+                title: Optional library title; defaults to root title.
+            """
+            try:
+                store = session.require_store()
+                record = store.save(
+                    session.root,
+                    tree_id=tree_id or session.tree_id,
+                    title=title,
+                    source_path=session.source_md_path,
+                )
+            except (KeyError, ValueError, OSError) as exc:
+                return ToolOutput.fail(str(exc))
+            session.tree_id = record.tree_id
+            return ToolOutput.succeed(
+                "saved "
+                f"tree_id={record.tree_id} title={record.title!r} "
+                f"nodes={record.node_count} path={store.tree_path(record.tree_id)}"
+            )
+
+        @tool()
+        def load_tree(tree_id: str) -> ToolOutput:
+            """Load a persisted tree into the working session.
+
+            Args:
+                tree_id: Library tree id.
+            """
+            try:
+                store = session.require_store()
+                record = store.load(tree_id)
+            except (KeyError, ValueError, OSError) as exc:
+                return ToolOutput.fail(str(exc))
+            session.snapshot()
+            session.root = record.root
+            session.tree_id = record.tree_id
+            if record.source_path:
+                session.source_md_path = Path(record.source_path)
+            return ToolOutput.succeed(
+                f"loaded tree_id={record.tree_id}\n"
+                + view_node(session.root, session.root.id, depth=2)
+            )
+
+        @tool()
+        def list_saved_trees() -> ToolOutput:
+            """List trees saved in the persistent library."""
+            try:
+                store = session.require_store()
+                items = store.list()
+            except (ValueError, OSError) as exc:
+                return ToolOutput.fail(str(exc))
+            if not items:
+                return ToolOutput.succeed("library empty")
+            lines = [f"library={len(items)}"]
+            for item in items:
+                lines.append(
+                    f"- {item['tree_id']}: {item['title']} "
+                    f"(nodes={item['node_count']}, updated={item['updated_at']})"
+                )
+            return ToolOutput.succeed("\n".join(lines))
+
+        @tool()
+        def search_working_tree(query: str, limit: int = 8) -> ToolOutput:
+            """Search nodes in the in-memory working tree.
+
+            Args:
+                query: Keywords to match against title/summary/content.
+                limit: Max hits.
+            """
+            hits = search_tree(
+                session.root,
+                query,
+                tree_id=session.tree_id or "memory",
+                limit=limit,
+            )
+            return ToolOutput.succeed(format_hits(hits))
+
+        @tool()
+        def search_library(query: str, limit: int = 8) -> ToolOutput:
+            """Search nodes across all persisted trees in the library.
+
+            Args:
+                query: Keywords to match against title/summary/content.
+                limit: Max hits.
+            """
+            try:
+                store = session.require_store()
+                hits = search_store(store, query, limit=limit)
+            except (ValueError, OSError, KeyError) as exc:
+                return ToolOutput.fail(str(exc))
+            return ToolOutput.succeed(format_hits(hits))
+
         return [
             view_outline,
             view_detail,
@@ -230,10 +366,29 @@ class TreeSession:
             update_fields,
             delete_node,
             relocate_node,
+            seed_from_markdown,
+            save_tree,
+            load_tree,
+            list_saved_trees,
+            search_working_tree,
+            search_library,
         ]
 
 
-def build_tree_tools(root: TreeNode) -> tuple[TreeSession, list[FunctionTool]]:
+def build_tree_tools(
+    root: TreeNode,
+    *,
+    store: TreeStore | None = None,
+    tree_id: str | None = None,
+    source_md_path: str | Path | None = None,
+) -> tuple[TreeSession, list[FunctionTool]]:
     """便捷工厂：给定根节点，返回 session 与 pagentv4 tool 列表。"""
-    session = TreeSession(root=root)
+    session = TreeSession(
+        root=root,
+        store=store,
+        tree_id=tree_id,
+        source_md_path=Path(source_md_path).expanduser().resolve()
+        if source_md_path is not None
+        else None,
+    )
     return session, session.build_tools()

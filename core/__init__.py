@@ -1,4 +1,5 @@
 from .harness import DEFAULT_EXTRA_SYSTEM, open_runner
+from .md import markdown_to_tree
 from .ops import (
     collect_ids,
     create_node,
@@ -14,6 +15,8 @@ from .ops import (
     view_node,
     view_node_detail,
 )
+from .query import NodeHit, format_hits, search_store, search_tree
+from .store import TreeRecord, TreeStore
 from .tools import TreeSession, build_tree_tools
 from .tree import NodeKind, TreeNode
 
@@ -21,9 +24,16 @@ __all__ = [
     "NodeKind",
     "TreeNode",
     "TreeSession",
+    "TreeStore",
+    "TreeRecord",
+    "NodeHit",
     "DEFAULT_EXTRA_SYSTEM",
     "build_tree_tools",
     "open_runner",
+    "markdown_to_tree",
+    "search_tree",
+    "search_store",
+    "format_hits",
     "collect_ids",
     "create_node",
     "get_node",
