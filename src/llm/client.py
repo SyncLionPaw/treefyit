@@ -1,116 +1,102 @@
-"""LLM client — one function, zero ceremony.
-
-Set ``OPENAI_API_KEY`` via environment or a ``.env`` file.
-"""
+"""Minimal LLM request helpers for treefyit."""
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import os
-import time
-from pathlib import Path
 from typing import Any
 
 import litellm
-from dotenv import load_dotenv
 
-# Auto-load .env from project root and ancestors
-_root = Path(__file__).resolve().parent.parent.parent
-for d in [_root] + list(_root.parents):
-    load_dotenv(d / ".env", override=False)
-load_dotenv()  # also try cwd
+from treefyit.config import get_settings
 
-# Backward-compat: CHATGPT_API_KEY → OPENAI_API_KEY
-if not os.getenv("OPENAI_API_KEY") and os.getenv("CHATGPT_API_KEY"):
-    os.environ["OPENAI_API_KEY"] = os.getenv("CHATGPT_API_KEY")
-
-logger = logging.getLogger(__name__)
 litellm.drop_params = True
 
-MAX_RETRIES = 10
-RETRY_DELAY = 1.0
+
+def normalize_optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return value
+    cleaned = value.strip()
+    return cleaned or None
 
 
-class LLMError(RuntimeError):
-    """Raised when all LLM retry attempts are exhausted."""
-
-
-def chat(prompt: str, **kwargs: Any) -> str:
-    """Send a prompt to the LLM and return the response text.
-
-    Args:
-        prompt: The user prompt.
-        **kwargs: Passed to ``litellm.completion``. Common keys:
-            model (str)      — default ``"gpt-4o"``
-            system (str)     — system message
-            temperature (float) — default 0
-            max_tokens (int) — output limit
-
-    Returns:
-        Response text.
-
-    Raises:
-        LLMError: If all retries fail.
-    """
-    model = str(kwargs.pop("model", "gpt-4o")).removeprefix("litellm/")
-    system = kwargs.pop("system", None)
-    temperature = kwargs.pop("temperature", 0.0)
-    max_tokens = kwargs.pop("max_tokens", None)
-
+def build_messages(prompt: str, system: str | None = None) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-
-    for i in range(MAX_RETRIES):
-        try:
-            response = litellm.completion(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                **kwargs,
-            )
-            return response.choices[0].message.content or ""
-        except Exception:
-            logger.warning("chat attempt %d/%d failed for model=%s", i + 1, MAX_RETRIES, model, exc_info=True)
-            if i < MAX_RETRIES - 1:
-                time.sleep(RETRY_DELAY)
-    raise LLMError(f"chat failed after {MAX_RETRIES} attempts for model={model}")
+    return messages
 
 
-async def achat(prompt: str, **kwargs: Any) -> str:
-    """Async version of :func:`chat`."""
-    model = str(kwargs.pop("model", "gpt-4o")).removeprefix("litellm/")
-    system = kwargs.pop("system", None)
-    temperature = kwargs.pop("temperature", 0.0)
-    max_tokens = kwargs.pop("max_tokens", None)
+def get_response_text(response: Any) -> str:
+    content = response.choices[0].message.content
+    if isinstance(content, str):
+        return content
 
-    messages: list[dict[str, str]] = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
+    if isinstance(content, list):
+        texts = [
+            item["text"]
+            for item in content
+            if isinstance(item, dict)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        ]
+        if texts:
+            return "\n".join(texts)
 
-    for i in range(MAX_RETRIES):
-        try:
-            response = await litellm.acompletion(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                **kwargs,
-            )
-            return response.choices[0].message.content or ""
-        except Exception:
-            logger.warning("achat attempt %d/%d failed for model=%s", i + 1, MAX_RETRIES, model, exc_info=True)
-            if i < MAX_RETRIES - 1:
-                await asyncio.sleep(RETRY_DELAY)
-    raise LLMError(f"achat failed after {MAX_RETRIES} attempts for model={model}")
+    raise ValueError("LLM response did not contain text content")
+
+
+def complete(
+    prompt: str,
+    *,
+    model: str | None = None,
+    system: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    **kwargs: Any,
+) -> str:
+    settings = get_settings().llm
+    response = litellm.completion(
+        model=str(model or settings.model).removeprefix("litellm/"),
+        messages=build_messages(prompt, system),
+        temperature=temperature if temperature is not None else settings.temperature,
+        max_tokens=max_tokens if max_tokens is not None else settings.max_tokens,
+        api_key=normalize_optional_text(kwargs.pop("api_key", None) or settings.api_key),
+        base_url=normalize_optional_text(kwargs.pop("base_url", None) or settings.base_url),
+        **kwargs,
+    )
+    return get_response_text(response)
+
+
+async def acomplete(
+    prompt: str,
+    *,
+    model: str | None = None,
+    system: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    **kwargs: Any,
+) -> str:
+    settings = get_settings().llm
+    response = await litellm.acompletion(
+        model=str(model or settings.model).removeprefix("litellm/"),
+        messages=build_messages(prompt, system),
+        temperature=temperature if temperature is not None else settings.temperature,
+        max_tokens=max_tokens if max_tokens is not None else settings.max_tokens,
+        api_key=normalize_optional_text(kwargs.pop("api_key", None) or settings.api_key),
+        base_url=normalize_optional_text(kwargs.pop("base_url", None) or settings.base_url),
+        **kwargs,
+    )
+    return get_response_text(response)
 
 
 def count_tokens(text: str, model: str = "gpt-4o") -> int:
-    """Return the token count for *text*."""
     if not text:
         return 0
-    return litellm.token_counter(model=model, text=text)
+    return litellm.token_counter(model=str(model).removeprefix("litellm/"), text=text)
+
+
+__all__ = [
+    "acomplete",
+    "complete",
+    "count_tokens",
+]
