@@ -1,3 +1,4 @@
+from .harness import DEFAULT_EXTRA_SYSTEM, open_runner
 from .ops import (
     collect_ids,
     create_node,
@@ -20,7 +21,9 @@ __all__ = [
     "NodeKind",
     "TreeNode",
     "TreeSession",
+    "DEFAULT_EXTRA_SYSTEM",
     "build_tree_tools",
+    "open_runner",
     "collect_ids",
     "create_node",
     "get_node",

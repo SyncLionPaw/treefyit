@@ -1,4 +1,8 @@
-"""把 core ops 包装成 pagentv4 tools，供 AgentCore / Runner 直接使用。"""
+"""Tree harness tools —— host 进程内的树 CRUD，供 ``Runner.create(tools=...)`` 注入。
+
+与 ``pagentv4.tools.HARNESS_WEB_TOOLS`` 同类：不进 sandbox，由 Runner 与
+local-backend 沙箱工具合并后交给模型。推荐入口见 ``core.harness.open_runner``。
+"""
 
 from __future__ import annotations
 
