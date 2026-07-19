@@ -13,6 +13,7 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import quote
 from uuid import uuid4
 
+import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -738,9 +739,8 @@ def create_app(*, store: RegistryStore | None = None) -> FastAPI:
 
     @app.get("/openapi.yaml", include_in_schema=False)
     async def openapi_yaml() -> Response:
-        path = Path(__file__).resolve().parents[2] / "openapi.yaml"
         return Response(
-            content=path.read_text(encoding="utf-8"),
+            content=yaml.safe_dump(app.openapi(), sort_keys=False, allow_unicode=True),
             media_type="application/x-yaml",
         )
 
