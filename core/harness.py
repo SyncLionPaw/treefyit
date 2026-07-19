@@ -13,6 +13,7 @@ from pagentv4 import FunctionTool, ProviderProtocol, Runner
 from pagentv4.tools import HARNESS_WEB_TOOLS
 
 from .ops import create_node
+from .search_tools import build_library_search_tools
 from .store import TreeStore
 from .tools import TreeSession, build_tree_tools
 from .tree import TreeNode
@@ -27,6 +28,13 @@ DEFAULT_EXTRA_SYSTEM = (
     "4) Use `list_saved_trees`, `load_tree`, `search_working_tree`, and "
     "`search_library` for later inspection and reuse.\n"
     "Keep answers concise."
+)
+
+SEARCH_EXTRA_SYSTEM = (
+    "You answer questions about persisted document trees.\n"
+    "Use search_document or search_library to find relevant sections, then "
+    "view_detail for evidence. Ground answers in retrieved content. "
+    "If nothing matches, say so."
 )
 
 
@@ -98,3 +106,33 @@ async def open_runner(
         await runner.sandbox.files.write("source.md", text)
 
     return session, runner
+
+
+async def open_search_runner(
+    thread_id: str,
+    provider: ProviderProtocol,
+    *,
+    store_dir: str | Path,
+    tree_id: str | None = None,
+    backend: str = "local",
+    overrides: dict | None = None,
+    extra_system: str = SEARCH_EXTRA_SYSTEM,
+    max_turns: int = 8,
+    skill_roots: Sequence[str | Path] = (),
+    tools: Sequence[FunctionTool] = (),
+    tool_hooks=None,
+) -> Runner:
+    """Open a local-backend Runner with read-only search tools for Q&A agents."""
+    store = TreeStore(store_dir)
+    search_tools = build_library_search_tools(store, tree_id=tree_id)
+    merged_overrides = {"backend": backend, **(overrides or {})}
+    return await Runner.create(
+        thread_id,
+        provider,
+        overrides=merged_overrides,
+        extra_system=extra_system,
+        max_turns=max_turns,
+        skill_roots=skill_roots,
+        tools=[*search_tools, *tools],
+        tool_hooks=tool_hooks,
+    )

@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-from core import create_node, open_runner
+from core import create_node, open_runner, open_search_runner
 from pagentv4 import FunctionTool
 from pagentv4.tools import HARNESS_WEB_TOOLS
 
@@ -110,3 +110,40 @@ def test_open_runner_can_load_existing_tree(monkeypatch, tmp_path: Path):
     )
     assert session.tree_id == "t1"
     assert session.root.children[0].title == "A"
+
+
+def test_open_search_runner_injects_read_only_search_tools(monkeypatch, tmp_path: Path):
+    from core import index_markdown
+
+    md = tmp_path / "doc.md"
+    md.write_text("# Hello\n\nWorld temperature tips.\n", encoding="utf-8")
+    index_markdown(md, tmp_path / "lib", tree_id="doc")
+
+    captured: dict = {}
+
+    async def fake_create(thread_id, provider, **kwargs):
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(thread_id=thread_id)
+
+    monkeypatch.setattr("core.harness.Runner.create", fake_create)
+
+    runner = asyncio.run(
+        open_search_runner(
+            "qa-demo",
+            object(),
+            store_dir=tmp_path / "lib",
+            tree_id="doc",
+        )
+    )
+    assert runner.thread_id == "qa-demo"
+    assert captured["kwargs"]["overrides"] == {"backend": "local"}
+    names = {tool.name for tool in captured["kwargs"]["tools"]}
+    assert names == {
+        "list_saved_trees",
+        "use_tree",
+        "search_document",
+        "search_library",
+        "view_outline",
+        "view_detail",
+    }
+    assert "create_child" not in names
