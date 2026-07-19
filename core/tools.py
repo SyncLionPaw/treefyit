@@ -1,10 +1,10 @@
-"""把 core ops 包装成 pagent tool，供 agent 直接调用。"""
+"""把 core ops 包装成 pagentv4 tools，供 AgentCore / Runner 直接使用。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from pagent import tool
+from pagentv4 import FunctionTool, ToolOutput, tool
 
 from .ops import (
     create_node,
@@ -47,29 +47,43 @@ class TreeSession:
         self.root = self.history.pop()
         return True
 
-    def build_tools(self) -> list:
-        """返回可交给 pagent Agent 的 FunctionTool 列表。"""
+    def build_tools(self) -> list[FunctionTool]:
+        """返回可交给 ``AgentCore(..., tools=...)`` / ``Runner`` 的 tool 列表。"""
         session = self
 
         @tool()
-        def view_outline(node_id: str, depth: int = 1) -> str:
-            """View a node outline by id. depth=0 is the node itself; depth=1 includes direct children."""
-            try:
-                return view_node(session.root, node_id, depth=depth)
-            except (KeyError, ValueError) as exc:
-                return f"error: {exc}"
+        def view_outline(node_id: str, depth: int = 1) -> ToolOutput:
+            """View a node outline by id.
 
-        @tool()
-        def view_detail(node_id: str, max_content_chars: int = 2000) -> str:
-            """View node detail by id, including truncated content and immediate children."""
+            Args:
+                node_id: Target node id.
+                depth: 0 = node itself; 1 = include direct children.
+            """
             try:
-                return view_node_detail(
-                    session.root,
-                    node_id,
-                    max_content_chars=max_content_chars,
+                return ToolOutput.succeed(
+                    view_node(session.root, node_id, depth=depth)
                 )
             except (KeyError, ValueError) as exc:
-                return f"error: {exc}"
+                return ToolOutput.fail(str(exc))
+
+        @tool()
+        def view_detail(node_id: str, max_content_chars: int = 2000) -> ToolOutput:
+            """View node detail by id, including truncated content.
+
+            Args:
+                node_id: Target node id.
+                max_content_chars: Max characters of content to include.
+            """
+            try:
+                return ToolOutput.succeed(
+                    view_node_detail(
+                        session.root,
+                        node_id,
+                        max_content_chars=max_content_chars,
+                    )
+                )
+            except (KeyError, ValueError) as exc:
+                return ToolOutput.fail(str(exc))
 
         @tool()
         def create_child(
@@ -79,8 +93,17 @@ class TreeSession:
             kind: str | None = None,
             content: str | None = None,
             summary: str | None = None,
-        ) -> str:
-            """Create a child node under parent_id and attach it. Returns the new outline of the parent."""
+        ) -> ToolOutput:
+            """Create a child node under parent_id and attach it.
+
+            Args:
+                parent_id: Parent node id.
+                id: New node id (must be unique in the tree).
+                title: New node title.
+                kind: Optional kind: text, image, table, or link.
+                content: Optional body text.
+                summary: Optional summary.
+            """
             try:
                 child = create_node(
                     id,
@@ -91,10 +114,10 @@ class TreeSession:
                 )
                 new_root = mount_node(session.root, parent_id, child)
             except (KeyError, ValueError) as exc:
-                return f"error: {exc}"
+                return ToolOutput.fail(str(exc))
             session.snapshot()
             session.root = new_root
-            return view_node(session.root, parent_id, depth=1)
+            return ToolOutput.succeed(view_node(session.root, parent_id, depth=1))
 
         @tool()
         def update_fields(
@@ -106,8 +129,19 @@ class TreeSession:
             clear_kind: bool = False,
             clear_content: bool = False,
             clear_summary: bool = False,
-        ) -> str:
-            """Update fields on a node by id. Omit a field to leave it unchanged; use clear_* to null it."""
+        ) -> ToolOutput:
+            """Update fields on a node by id.
+
+            Args:
+                node_id: Target node id.
+                title: New title; omit to keep unchanged.
+                kind: New kind; omit to keep unchanged.
+                content: New content; omit to keep unchanged.
+                summary: New summary; omit to keep unchanged.
+                clear_kind: Set kind to null.
+                clear_content: Set content to null.
+                clear_summary: Set summary to null.
+            """
             try:
                 kwargs: dict = {}
                 if title is not None:
@@ -128,26 +162,33 @@ class TreeSession:
                 get_node(session.root, node_id)
                 new_root = update_node(session.root, node_id, **kwargs)
             except (KeyError, ValueError) as exc:
-                return f"error: {exc}"
+                return ToolOutput.fail(str(exc))
             session.snapshot()
             session.root = new_root
-            return view_node_detail(session.root, node_id, max_content_chars=500)
+            return ToolOutput.succeed(
+                view_node_detail(session.root, node_id, max_content_chars=500)
+            )
 
         @tool()
-        def delete_node(node_id: str) -> str:
-            """Delete a node and its subtree by id. Cannot delete the root."""
+        def delete_node(node_id: str) -> ToolOutput:
+            """Delete a node and its subtree by id. Cannot delete the root.
+
+            Args:
+                node_id: Node id to delete.
+            """
             try:
                 parent = get_parent(session.root, node_id)
                 parent_hint = parent.id if parent is not None else None
                 new_root = remove_node(session.root, node_id)
             except (KeyError, ValueError) as exc:
-                return f"error: {exc}"
+                return ToolOutput.fail(str(exc))
             session.snapshot()
             session.root = new_root
             if parent_hint is None:
-                return f"deleted {node_id}"
-            return f"deleted {node_id}\n" + view_node(
-                session.root, parent_hint, depth=1
+                return ToolOutput.succeed(f"deleted {node_id}")
+            return ToolOutput.succeed(
+                f"deleted {node_id}\n"
+                + view_node(session.root, parent_hint, depth=1)
             )
 
         @tool()
@@ -155,8 +196,14 @@ class TreeSession:
             node_id: str,
             new_parent_id: str,
             index: int | None = None,
-        ) -> str:
-            """Move a node under a new parent. Optional index inserts at that child position."""
+        ) -> ToolOutput:
+            """Move a node under a new parent.
+
+            Args:
+                node_id: Node id to move.
+                new_parent_id: Destination parent id.
+                index: Optional child index after move; default append.
+            """
             try:
                 new_root = move_node(
                     session.root,
@@ -165,10 +212,12 @@ class TreeSession:
                     index=index,
                 )
             except (KeyError, ValueError) as exc:
-                return f"error: {exc}"
+                return ToolOutput.fail(str(exc))
             session.snapshot()
             session.root = new_root
-            return view_node(session.root, new_parent_id, depth=1)
+            return ToolOutput.succeed(
+                view_node(session.root, new_parent_id, depth=1)
+            )
 
         return [
             view_outline,
@@ -180,7 +229,7 @@ class TreeSession:
         ]
 
 
-def build_tree_tools(root: TreeNode) -> tuple[TreeSession, list]:
-    """便捷工厂：给定根节点，返回 session 与 tool 列表。"""
+def build_tree_tools(root: TreeNode) -> tuple[TreeSession, list[FunctionTool]]:
+    """便捷工厂：给定根节点，返回 session 与 pagentv4 tool 列表。"""
     session = TreeSession(root=root)
     return session, session.build_tools()
