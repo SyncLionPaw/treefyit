@@ -3,29 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
-
-import pytest
 
 TESTFILE = Path(__file__).resolve().parent / "testfile" / "short.md"
 
 
-@pytest.fixture
-def verify_ok():
-    with patch(
-        "src.tree.pipeline.verify_tree",
-        new_callable=AsyncMock,
-        return_value={
-            "ok": True,
-            "score": 1.0,
-            "issues": [],
-            "suspicious_nodes": [],
-        },
-    ):
-        yield
-
-
 def test_health_openapi(api_client):
+    health = api_client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"
+
     resp = api_client.get("/openapi.yaml")
     assert resp.status_code == 200
     assert "openapi:" in resp.text
@@ -53,7 +39,7 @@ def test_forest_search_empty_query(api_client):
     assert data["sections"]["error"] == "empty query"
 
 
-def test_build_md_no_llm(api_client, verify_ok):
+def test_build_md_no_llm(api_client):
     with open(TESTFILE, "rb") as fh:
         resp = api_client.post(
             "/api/build",

@@ -21,6 +21,10 @@ ENV/
 
 # Runtime data (SQLite, caches, uploads, build payloads)
 .treefyit-store/
+.treefyit-core/
+examples/agent_tree/.tree-library/
+examples/agent_tree/.proof-library/
+examples/agent_tree/.proof-harness-library/
 results/
 
 # Testing & type checking
