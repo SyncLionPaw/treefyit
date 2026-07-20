@@ -60,4 +60,14 @@ def markdown_to_tree(
         body = text.strip()
         if body:
             root.content = body
+        return root
+
+    # 文档只有一个顶层标题时，把它提升成根，避免多包一层占位根。
+    if root.content is None and len(root.children) == 1:
+        top = root.children[0]
+        root.title = top.title
+        root.kind = top.kind
+        root.content = top.content
+        root.summary = top.summary
+        root.children = top.children
     return root
