@@ -6,7 +6,7 @@ from typing import Any
 
 import litellm
 
-from treefyit.config import get_settings
+from src.config import get_settings
 
 litellm.drop_params = True
 

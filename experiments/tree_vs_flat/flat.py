@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from core.query import tokenize
+from core.build.query import tokenize
 
 paragraph_split = re.compile(r"\n\s*\n+")
 

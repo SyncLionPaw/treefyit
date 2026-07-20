@@ -3,7 +3,7 @@ import uvicorn
 
 def main() -> None:
     uvicorn.run(
-        "treefyit.server.app:app",
+        "src.server.app:app",
         host="127.0.0.1",
         port=8765,
     )

@@ -1,50 +1,46 @@
 [project]
-name = "treefyit"
-version = "0.1.0"
+dependencies = [
+  "litellm>=1.50",
+  "python-dotenv>=1.0",
+  "fastapi>=0.100",
+  "pydantic>=2.0",
+  "python-magic>=0.4.27",
+  "uvicorn>=0.20",
+  "python-multipart>=0.0.5",
+  "requests>=2.28",
+  "pagent==0.7.10",
+  "rank-bm25>=0.2.2",
+  "markitdown[all]>=0.1.0",
+  "markdown-it-py>=3.0",
+  "beautifulsoup4>=4.12",
+  "lxml>=4.9",
+  "jieba>=0.42.1",
+]
 description = "Tree-based document indexing — extract hierarchical tree structures from PDF and Markdown documents"
+name = "treefyit"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "litellm>=1.50",
-    "python-dotenv>=1.0",
-    "fastapi>=0.100",
-    "pydantic>=2.0",
-    "python-magic>=0.4.27",
-    "uvicorn>=0.20",
-    "python-multipart>=0.0.5",
-    "requests>=2.28",
-    "pagent==0.7.10",
-    "rank-bm25>=0.2.2",
-    "markitdown[all]>=0.1.0",
-    "markdown-it-py>=3.0",
-    "beautifulsoup4>=4.12",
-    "lxml>=4.9",
-    "jieba>=0.42.1",
-]
+version = "0.1.0"
 
 [project.scripts]
-treefyit = "treefyit.cli:main"
+treefyit = "src.cli:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.0",
-    "httpx>=0.27",
+  "pytest>=9.1.0",
+  "httpx>=0.27",
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests"]
 markers = [
-    "integration: calls external LLM APIs; skipped in CI by default",
+  "integration: calls external LLM APIs; skipped in CI by default",
 ]
-
+pythonpath = ["."]
+testpaths = []
 
 [build-system]
-requires = ["hatchling"]
 build-backend = "hatchling.build"
+requires = ["hatchling"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["core"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src" = "treefyit"
+packages = ["core", "src"]

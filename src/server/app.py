@@ -19,26 +19,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from treefyit.builder import (
+from src.builder import (
     BuildOptions,
     RuleBasedSectionRefiner,
     build_tree_from_file,
     build_tree_from_text,
 )
-from treefyit.builder.parse import parse_file_text
-from treefyit.chat import build_pagent_events
-from treefyit.chat.pagent import event_to_ndjson
-from treefyit.chat.session import (
+from src.builder.parse import parse_file_text
+from src.chat import build_pagent_events
+from src.chat.pagent import event_to_ndjson
+from src.chat.session import (
     ChatSessionService,
     InMemoryChatSessionStorage,
     JsonChatSessionStorage,
     SqliteChatSessionStorage,
 )
-from treefyit.config import ChatSettings, get_settings
-from treefyit.logging_config import configure_treefyit_logging
-from treefyit.model.forest import Forest
-from treefyit.model.tree import Tree
-from treefyit.query.query import (
+from src.config import ChatSettings, get_settings
+from src.logging_config import configure_treefyit_logging
+from src.model.forest import Forest
+from src.model.tree import Tree
+from src.query.query import (
     NodeQueryHit,
     TreeQueryHit,
     TreeIndex,
@@ -47,12 +47,12 @@ from treefyit.query.query import (
     content_to_search_text,
     score_nodes_bm25,
 )
-from treefyit.server.build_tasks import (
+from src.server.build_tasks import (
     BuildTask,
     BuildTaskExecutionError,
     BuildTaskManager,
 )
-from treefyit.store import RegistryStore
+from src.store import RegistryStore
 
 configure_treefyit_logging()
 logger = logging.getLogger("treefyit.server")

@@ -1,3 +1,3 @@
-from treefyit.chat.pagent import build_pagent_events
+from src.chat.pagent import build_pagent_events
 
 __all__ = ["build_pagent_events"]

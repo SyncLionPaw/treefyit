@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from treefyit.model.tree import Tree
+from src.model.tree import Tree
 
 
 class Forest(BaseModel):

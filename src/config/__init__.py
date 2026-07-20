@@ -1,6 +1,6 @@
 """Public configuration exports for treefyit."""
 
-from treefyit.config.settings import (
+from src.config.settings import (
     AppSettings,
     BuilderSettings,
     ChatSettings,

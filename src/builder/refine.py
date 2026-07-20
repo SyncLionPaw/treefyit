@@ -11,9 +11,9 @@ from __future__ import annotations
 import re
 from typing import Any, Protocol
 
-from treefyit.config import get_settings
-from treefyit.llm.refine import refine_section
-from treefyit.model.tree import LeafType
+from src.config import get_settings
+from src.llm.refine import refine_section
+from src.model.tree import LeafType
 
 
 type Section = dict[str, Any]

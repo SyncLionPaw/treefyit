@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from .ops import create_node
-from .tree import NodeKind, TreeNode
+from ..model.ops import create_node
+from ..model.tree import NodeKind, TreeNode
 
 heading_pattern = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 

@@ -7,7 +7,7 @@ summary helper, but keeps traversal and tree-specific policy inside builder.
 
 from __future__ import annotations
 
-from treefyit.llm.summarize import summarize_text
+from src.llm.summarize import summarize_text
 
 
 def summarize_legacy_tree(nodes: list[dict]) -> None:

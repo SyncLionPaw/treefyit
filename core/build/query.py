@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .store import TreeStore
-from .tree import TreeNode
+from ..model.store import TreeStore
+from ..model.tree import TreeNode
 
 token_pattern = re.compile(r"[\u4e00-\u9fff]+|[a-z0-9]+", re.I)
 

@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 from fastapi import FastAPI
 
-from treefyit.chat.session import ChatSessionService
-from treefyit.config import get_settings
-from treefyit.model.tree import Tree
-from treefyit.query.query import (
+from src.chat.session import ChatSessionService
+from src.config import get_settings
+from src.model.tree import Tree
+from src.query.query import (
     build_tree_index,
     content_to_search_text,
     score_nodes_bm25,

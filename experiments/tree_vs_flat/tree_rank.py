@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.ops import get_node, view_node_detail
-from core.query import tokenize
-from core.tree import TreeNode
+from core.model.ops import get_node, view_node_detail
+from core.build.query import tokenize
+from core.model.tree import TreeNode
 
 
 @dataclass(frozen=True)

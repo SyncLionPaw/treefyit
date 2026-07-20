@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from treefyit.llm.client import acomplete, complete
-from treefyit.llm.prompts import SUMMARY_SYSTEM_PROMPT, build_summary_prompt
+from src.llm.client import acomplete, complete
+from src.llm.prompts import SUMMARY_SYSTEM_PROMPT, build_summary_prompt
 
 
 def summarize_text(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from treefyit.cli import main as run_cli
+from src.cli import main as run_cli
 
 
 def main() -> None:

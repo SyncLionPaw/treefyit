@@ -4,8 +4,8 @@ This package contains the thin model invocation layer used by builder-side LLM
 strategies. It should stay independent from tree construction logic.
 """
 
-from treefyit.llm.client import acomplete, complete, count_tokens
-from treefyit.llm.prompts import (
+from src.llm.client import acomplete, complete, count_tokens
+from src.llm.prompts import (
     SECTION_REFINER_SYSTEM_PROMPT,
     SECTION_REFINER_USER_PROMPT_TEMPLATE,
     SUMMARY_SYSTEM_PROMPT,
@@ -13,8 +13,8 @@ from treefyit.llm.prompts import (
     build_section_refine_prompt,
     build_summary_prompt,
 )
-from treefyit.llm.refine import refine_section
-from treefyit.llm.summarize import asummarize_text, summarize_text
+from src.llm.refine import refine_section
+from src.llm.summarize import asummarize_text, summarize_text
 
 __all__ = [
     "SECTION_REFINER_SYSTEM_PROMPT",

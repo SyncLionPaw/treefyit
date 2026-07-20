@@ -6,9 +6,9 @@ from collections.abc import Sequence
 
 import uvicorn
 
-from treefyit.config import get_settings
-from treefyit.logging_config import configure_treefyit_logging
-from treefyit.server import app
+from src.config import get_settings
+from src.logging_config import configure_treefyit_logging
+from src.server import app
 
 
 def build_parser() -> argparse.ArgumentParser:

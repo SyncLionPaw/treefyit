@@ -14,22 +14,22 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from treefyit.builder.convert import build_model_tree
-from treefyit.builder.infer import LevelInferer, RuleBasedLevelInferer
-from treefyit.builder.parse import (
+from src.builder.convert import build_model_tree
+from src.builder.infer import LevelInferer, RuleBasedLevelInferer
+from src.builder.parse import (
     build_legacy_tree_from_sections,
     parse_html_sections,
     parse_pdf_sections,
     parse_text_sections,
 )
-from treefyit.builder.refine import (
+from src.builder.refine import (
     LLMSectionRefiner,
     RuleBasedSectionRefiner,
     SectionRefiner,
 )
-from treefyit.builder.source import detect_source_kind
-from treefyit.builder.summarize import summarize_legacy_tree
-from treefyit.model.tree import Tree
+from src.builder.source import detect_source_kind
+from src.builder.summarize import summarize_legacy_tree
+from src.model.tree import Tree
 
 logger = logging.getLogger("treefyit.builder")
 

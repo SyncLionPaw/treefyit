@@ -1,6 +1,26 @@
-from .harness import DEFAULT_EXTRA_SYSTEM, SEARCH_EXTRA_SYSTEM, open_runner, open_search_runner
-from .md import markdown_to_tree
-from .ops import (
+"""文档树三层：
+
+- ``core.model``：数据结构定义（TreeNode / 节点操作 / 持久化）
+- ``core.build``：构建方式（markdown 建树 / 检索）
+- ``core.agent``：面向 LLM 的工具（树工具 / 检索工具）
+
+顶层重导出保持向后兼容，``from core import ...`` 仍可用。
+"""
+
+from .agent import (
+    DEFAULT_EXTRA_SYSTEM,
+    SEARCH_EXTRA_SYSTEM,
+    TreeSession,
+    build_search_tools,
+    build_tree_tools,
+    index_markdown,
+)
+from .build import NodeHit, format_hits, markdown_to_tree, search_store, search_tree
+from .model import (
+    NodeKind,
+    TreeNode,
+    TreeRecord,
+    TreeStore,
     collect_ids,
     create_node,
     get_by_path,
@@ -15,11 +35,6 @@ from .ops import (
     view_node,
     view_node_detail,
 )
-from .query import NodeHit, format_hits, search_store, search_tree
-from .search_tools import build_library_search_tools, index_markdown
-from .store import TreeRecord, TreeStore
-from .tools import TreeSession, build_tree_tools
-from .tree import NodeKind, TreeNode
 
 __all__ = [
     "NodeKind",
@@ -31,10 +46,8 @@ __all__ = [
     "DEFAULT_EXTRA_SYSTEM",
     "SEARCH_EXTRA_SYSTEM",
     "build_tree_tools",
-    "build_library_search_tools",
+    "build_search_tools",
     "index_markdown",
-    "open_runner",
-    "open_search_runner",
     "markdown_to_tree",
     "search_tree",
     "search_store",

@@ -1,6 +1,6 @@
-# treefyit.builder 数据流
+# src.builder 数据流
 
-`treefyit.builder` 的目标是把多类型文档输入，转换成稳定的 `treefyit.model.tree.Tree`。
+`src.builder` 的目标是把多类型文档输入，转换成稳定的 `src.model.tree.Tree`。
 
 当前链路是：
 
@@ -10,7 +10,7 @@ source -> parse -> infer -> refine -> build -> finalize -> convert
 
 ## 1. source
 
-文件：[`source.py`](file:///Users/bytedance/docs/treefyit/treefyit/builder/source.py)
+文件：[`source.py`](file:///Users/bytedance/docs/treefyit/src/builder/source.py)
 
 职责：
 
@@ -29,7 +29,7 @@ Literal["pdf", "html", "zip", "text"]
 
 ## 2. parse
 
-文件：[`parse.py`](file:///Users/bytedance/docs/treefyit/treefyit/builder/parse.py)
+文件：[`parse.py`](file:///Users/bytedance/docs/treefyit/src/builder/parse.py)
 
 职责：
 
@@ -64,7 +64,7 @@ section 的基础形态：
 
 ## 3. infer
 
-文件：[`infer.py`](file:///Users/bytedance/docs/treefyit/treefyit/builder/infer.py)
+文件：[`infer.py`](file:///Users/bytedance/docs/treefyit/src/builder/infer.py)
 
 职责：
 
@@ -98,7 +98,7 @@ list[section]
 
 ## 4. refine
 
-文件：[`refine.py`](file:///Users/bytedance/docs/treefyit/treefyit/builder/refine.py)
+文件：[`refine.py`](file:///Users/bytedance/docs/treefyit/src/builder/refine.py)
 
 职责：
 
@@ -137,7 +137,7 @@ refined section 会在基础字段上增加结构化标记：
 
 ## 5. build
 
-文件：[`parse.py`](file:///Users/bytedance/docs/treefyit/treefyit/builder/parse.py)
+文件：[`parse.py`](file:///Users/bytedance/docs/treefyit/src/builder/parse.py)
 
 职责：
 
@@ -171,7 +171,7 @@ legacy node 形态：
 
 ## 6. finalize
 
-文件：[`build.py`](file:///Users/bytedance/docs/treefyit/treefyit/builder/build.py)
+文件：[`build.py`](file:///Users/bytedance/docs/treefyit/src/builder/build.py)
 
 职责：
 
@@ -197,11 +197,11 @@ list[legacy_node]
 
 ## 7. convert
 
-文件：[`convert.py`](file:///Users/bytedance/docs/treefyit/treefyit/builder/convert.py)
+文件：[`convert.py`](file:///Users/bytedance/docs/treefyit/src/builder/convert.py)
 
 职责：
 
-- 把 nested dict tree 转成 `treefyit.model.tree.Tree`
+- 把 nested dict tree 转成 `src.model.tree.Tree`
 - 填充 `depth` / `subtree_size` / `leaf_count`
 - 根据 `content_kind` / `leaf_type` 转成正式 content model
 

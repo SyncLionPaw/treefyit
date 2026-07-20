@@ -6,8 +6,8 @@ __pycache__/
 .Python
 *.egg-info/
 .eggs/
-dist/
-build/
+/dist/
+/build/
 
 # Virtual environments
 .venv/
@@ -51,3 +51,5 @@ resources/
 */target/
 experiments/**/.exp-store/
 experiments/tree_vs_flat/.exp-store/
+
+.pagent

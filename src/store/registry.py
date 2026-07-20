@@ -5,8 +5,8 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
-from treefyit.model.tree import Tree
-from treefyit.query.query import TreeIndex
+from src.model.tree import Tree
+from src.query.query import TreeIndex
 
 
 class RegistryStore:

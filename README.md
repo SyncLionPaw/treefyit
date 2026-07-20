@@ -5,9 +5,9 @@ Tree-based document indexing for Markdown, HTML, and PDF documents.
 ## Configure API keys
 
 `treefyit` reads runtime settings from
-[treefyit/config/settings.local.toml](treefyit/config/settings.local.toml).
+[src/config/settings.local.toml](src/config/settings.local.toml).
 Start from
-[treefyit/config/settings.toml.example](treefyit/config/settings.toml.example)
+[src/config/settings.toml.example](src/config/settings.toml.example)
 and override locally as needed.
 
 ```toml
@@ -23,7 +23,7 @@ api_key = "..."
 
 ### System dependency
 
-`treefyit.builder` uses `libmagic` through `python-magic` to detect file types
+`src.builder` uses `libmagic` through `python-magic` to detect file types
 by content.
 
 - macOS
@@ -54,13 +54,13 @@ uv run treefyit -p 8765
 uv run python main.py --clear
 
 # Or run the module directly
-uv run python -m treefyit.server
+uv run python -m src.server
 ```
 
 ### Python — build a tree programmatically
 
 ```python
-from treefyit.builder import BuildOptions, build_tree_from_file
+from src.builder import BuildOptions, build_tree_from_file
 
 tree = build_tree_from_file(
     "paper.md",
@@ -83,12 +83,12 @@ source -> parse -> infer levels -> refine sections -> build tree -> summarize ->
 - `refine sections`: split or normalize oversized sections
 - `build tree`: assemble the nested structure
 - `summarize`: optionally summarize nodes
-- `Tree model`: convert to `treefyit.model.tree.Tree`
+- `Tree model`: convert to `src.model.tree.Tree`
 
 ### Python — LLM client
 
 ```python
-from treefyit.llm import acomplete, complete, count_tokens
+from src.llm import acomplete, complete, count_tokens
 
 text = complete("Summarize in one sentence: ...")
 resp = await acomplete("...")
@@ -98,7 +98,7 @@ n = count_tokens("long text")
 ## Project layout
 
 ```text
-treefyit/
+src/
   builder/       typed build pipeline
   chat/          chat event building
   config/        TOML settings
@@ -107,21 +107,21 @@ treefyit/
   query/         tree / forest query and BM25 index
   server/        FastAPI service
   store/         JSON registry persistence
-main.py          thin CLI for `treefyit.server`
-openapi.yaml     `treefyit.server` API spec
+main.py          thin CLI for `src.server`
+openapi.yaml     `src.server` API spec
 ```
 
 ## HTTP API
 
-The current service implementation lives in `treefyit.server`.
+The current service implementation lives in `src.server`.
 
 ```bash
-uv run python -m treefyit.server
+uv run python -m src.server
 ```
 
 Default configuration:
 
-- LLM settings: [treefyit/config/settings.local.toml](treefyit/config/settings.local.toml)
+- LLM settings: [src/config/settings.local.toml](src/config/settings.local.toml)
 - Store directory: `.treefyit-store/`
 - OpenAPI spec: [openapi.yaml](openapi.yaml)
 

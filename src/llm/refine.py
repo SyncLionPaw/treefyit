@@ -7,8 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from treefyit.llm.client import complete
-from treefyit.llm.prompts import (
+from src.llm.client import complete
+from src.llm.prompts import (
     SECTION_REFINER_SYSTEM_PROMPT,
     build_section_refine_prompt,
 )

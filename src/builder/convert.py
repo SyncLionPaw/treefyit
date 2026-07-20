@@ -1,13 +1,13 @@
 """Model conversion.
 
-This module converts the internal nested dict tree into the typed `treefyit.model.tree.Tree`
+This module converts the internal nested dict tree into the typed `src.model.tree.Tree`
 model and fills derived structural stats. It also assigns node ids while creating
 the final tree model, instead of mutating the legacy intermediate tree.
 """
 
 from __future__ import annotations
 
-from treefyit.model.tree import LeafType, ResourceContent, TextContent, Tree, UrlContent
+from src.model.tree import LeafType, ResourceContent, TextContent, Tree, UrlContent
 
 
 def build_model_tree(legacy_tree: list[dict], *, root_id: str, root_title: str) -> Tree:

@@ -16,8 +16,8 @@ import jieba
 from pydantic import BaseModel, Field
 from rank_bm25 import BM25Okapi
 
-from treefyit.model.forest import Forest
-from treefyit.model.tree import NodeContent, Tree
+from src.model.forest import Forest
+from src.model.tree import NodeContent, Tree
 
 
 class TreeQueryHit(BaseModel):
