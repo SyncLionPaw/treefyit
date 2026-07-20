@@ -49,3 +49,5 @@ resources/
 
 # Rust
 */target/
+experiments/**/.exp-store/
+experiments/tree_vs_flat/.exp-store/
