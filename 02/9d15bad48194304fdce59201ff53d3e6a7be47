@@ -1,0 +1,127 @@
+core/build/__init__.py
+  s_349a9c8f9f7508::t_0aeddfc428f724 1-12
+pyproject.toml
+  s_349a9c8f9f7508::t_ff79a9638b80c5 2-18,20,23,30-31,36,38-39,43,46
+  s_349a9c8f9f7508::t_5633e7dc565d86 26
+app.py
+  s_349a9c8f9f7508::t_5a7650bd9358ad 6
+.gitignore
+  s_349a9c8f9f7508::t_fc7e50a5ca07ab 9-10
+  h_e0237b570924a6 54-55
+core/build/md.py
+  s_349a9c8f9f7508::t_353cf3688fa360 7-8
+README.md
+  s_349a9c8f9f7508::t_f18e90009f0954 86
+  s_349a9c8f9f7508::t_dc31d4c69fc052 63
+  s_349a9c8f9f7508::t_a5acaeda07c836 8,10
+  s_349a9c8f9f7508::t_2890307e37c380 91
+  s_349a9c8f9f7508::t_a91028b2eebea7 101,110-111,116,119,124
+  s_349a9c8f9f7508::t_8a0a6f881ec78c 26
+  s_349a9c8f9f7508::t_f0b4af9f74a816 57
+core/agent/tools.py
+  s_349a9c8f9f7508::t_fc485754a09dac 9
+  s_349a9c8f9f7508::t_e6f1be562bdb34 235-241
+  s_349a9c8f9f7508::t_1cbcb364a1442c 43
+  s_349a9c8f9f7508::t_f1672395be44fb 334-340
+  s_349a9c8f9f7508::t_12f21fd9b20201 98,101-102
+  s_349a9c8f9f7508::t_22fb8faa1bd6ed 37-38
+  s_349a9c8f9f7508::t_9313e4b24b8b5c 154-160
+  s_349a9c8f9f7508::t_5bdcfe24c28ecd 392,395-396
+  s_349a9c8f9f7508::t_2e803f4fe9b3fa 130,133-138
+  s_349a9c8f9f7508::t_691b5616c0207d 14-15,27-28
+  s_349a9c8f9f7508::t_03fd27ec7e2054 79,82-83
+  s_349a9c8f9f7508::t_8d08669ec92804 361-367
+  s_349a9c8f9f7508::t_3a5199bdd7a181 209-215
+  s_349a9c8f9f7508::t_3568cf4752fa7d 342,345
+  s_349a9c8f9f7508::t_6a18a357cd4ccd 384-390
+  s_349a9c8f9f7508::t_e409b9d80bd6fd 29
+  s_349a9c8f9f7508::t_5e07f241acb341 247,250-252
+  s_349a9c8f9f7508::t_1865064664a7be 30-36,39-40
+  s_349a9c8f9f7508::t_5c097d9740e1df 274,277
+  s_349a9c8f9f7508::t_44c3779c22144b 171,174-181
+  s_349a9c8f9f7508::t_5e22c56106dc7c 190
+  s_349a9c8f9f7508::t_d987cc27c5b736 217,220
+  s_349a9c8f9f7508::t_b29372fc9cc31d 115-121
+  s_349a9c8f9f7508::t_ea8b398e76b542 144
+  s_349a9c8f9f7508::t_8cd04606dcc850 26
+  s_349a9c8f9f7508::t_5a42878744a661 86,232,264,297-298,308-310
+  s_349a9c8f9f7508::t_fc82da0de79660 422,428-432,434
+  s_349a9c8f9f7508::t_e288a30e30f2bd 1,4
+  s_349a9c8f9f7508::t_ccf11ad3dd49e9 301-307
+  s_349a9c8f9f7508::t_a0d56796267d57 266-272
+  s_349a9c8f9f7508::t_25fe40058d70ba 71-77,90-96
+  s_349a9c8f9f7508::t_2772a4dab80951 311,314-315
+core/agent/__init__.py
+  s_349a9c8f9f7508::t_1fbd10537e611f 5,13
+  s_349a9c8f9f7508::t_608ddbb2a3c57a 1,3,6,8
+  s_349a9c8f9f7508::t_bb0aac723b875a 2,4,7,9-12,14-17
+experiments/tree_vs_flat/flat.py
+  s_349a9c8f9f7508::t_b1726eda8a17a8 8
+core/model/__init__.py
+  s_349a9c8f9f7508::t_ffc276a649221e 1,3,8,13-14,16,18-39
+core/agent/search_tools.py
+  s_349a9c8f9f7508::t_3494b82ce53e66 14,18
+  s_349a9c8f9f7508::t_93574a145daec2 1,9,15-17,21-22,26-27,31-32,36,42,47,53,66,72,86
+  s_349a9c8f9f7508::t_0988f07255e80c 45-46,48-51,64-65,67-70
+  s_349a9c8f9f7508::t_087cdd36a3e26c 56-57
+  s_349a9c8f9f7508::t_47ec2734389a70 75-76
+  s_349a9c8f9f7508::t_079d1cc5dd197c 29-30,34
+  s_349a9c8f9f7508::t_9b346ac23d025e 39-40
+  s_349a9c8f9f7508::t_aef8b9afee599e 10-12,20
+  s_349a9c8f9f7508::t_3ce242f2eed8df 97
+src/builder/convert.py
+  s_349a9c8f9f7508::t_6e57026f267541 3
+core/build/query.py
+  s_349a9c8f9f7508::t_353cf3688fa360 8-9
+core/__init__.py
+  s_349a9c8f9f7508::t_e4405892ceccc7 5
+  s_349a9c8f9f7508::t_6ed36328dcfae0 2-4,6-13,15-23
+  s_349a9c8f9f7508::t_5da138d09c371f 14
+  s_349a9c8f9f7508::t_30afd370564a3d 1
+  s_349a9c8f9f7508::t_8e330e3eaeb104 49
+experiments/tree_vs_flat/tree_rank.py
+  s_349a9c8f9f7508::t_210301c782343b 7-9
+examples/build_tree_demo.py
+  s_349a9c8f9f7508::t_e2a4b8f8703392 19
+  s_349a9c8f9f7508::t_2f8fbaae0294e8 1,3-4,17,48-60,65,77-81,83-85,88,90-103,105,112-115
+  s_349a9c8f9f7508::t_4bed91e1fcafe0 82
+  s_349a9c8f9f7508::t_87a8fc0b21f71e 2,5-9,14,18,20-40,42-47,64,66-74,76,86-87,89,106-111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "029d15bad48194304fdce59201ff53d3e6a7be47",
+  "prompts": {},
+  "humans": {
+    "h_e0237b570924a6": {
+      "author": "gongyulei <gongyulei@bytedance.com>"
+    }
+  },
+  "sessions": {
+    "s_349a9c8f9f7508": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a5db99f68e98982498689cb",
+        "model": "openrouter-3o__dev"
+      },
+      "human_author": null
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {
+    "s_349a9c8f9f7508": {
+      "tool": "trae",
+      "conversation_id": "6a5db99f68e98982498689cb",
+      "session_id": "6a5db99f68e98982498689cb",
+      "status": "remote_only",
+      "message": "Remote transcript resolution is not implemented yet for TRAE prompts."
+    },
+    "s_349a9c8f9f7508::t_58d68b650e507c": {
+      "tool": "trae",
+      "conversation_id": "6a5db99f68e98982498689cb",
+      "session_id": "6a5db99f68e98982498689cb",
+      "status": "remote_only",
+      "message": "Remote transcript resolution is not implemented yet for TRAE prompts."
+    }
+  }
+}
