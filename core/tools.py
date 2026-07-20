@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pagentv4 import FunctionTool, ToolOutput, tool
 
-from .md import markdown_to_tree
+from .build import build_tree_from_text
 from .ops import (
     create_node,
     get_node,
@@ -236,7 +236,7 @@ class TreeSession:
 
         @tool()
         def seed_from_markdown(path: str | None = None) -> ToolOutput:
-            """Build a heading tree from a markdown file into the working tree.
+            """Build a tree from markdown via the rule-based pipeline (no LLM).
 
             Args:
                 path: Host markdown path. Defaults to the session source markdown.
@@ -249,7 +249,7 @@ class TreeSession:
                 if not md_path.is_file():
                     raise FileNotFoundError(f"markdown not found: {md_path}")
                 text = md_path.read_text(encoding="utf-8")
-                seeded = markdown_to_tree(
+                seeded = build_tree_from_text(
                     text,
                     root_id=session.root.id,
                     root_title=session.root.title or md_path.stem,
