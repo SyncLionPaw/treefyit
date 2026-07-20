@@ -1,3 +1,8 @@
+from .build import (
+    build_sections_from_text,
+    build_tree_from_file,
+    build_tree_from_text,
+)
 from .harness import DEFAULT_EXTRA_SYSTEM, SEARCH_EXTRA_SYSTEM, open_runner, open_search_runner
 from .md import markdown_to_tree
 from .ops import (
@@ -35,6 +40,9 @@ __all__ = [
     "index_markdown",
     "open_runner",
     "open_search_runner",
+    "build_tree_from_text",
+    "build_tree_from_file",
+    "build_sections_from_text",
     "markdown_to_tree",
     "search_tree",
     "search_store",

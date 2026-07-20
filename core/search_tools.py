@@ -152,13 +152,14 @@ def index_markdown(
     tree_id: str | None = None,
     title: str | None = None,
 ):
-    """Deterministic helper: markdown → tree → persist (no LLM required)."""
-    from .md import markdown_to_tree
+    """Deterministic helper: markdown → rule-based tree → persist (no LLM)."""
+    from .build import build_tree_from_file
 
     path = Path(md_path).expanduser().resolve()
     store = TreeStore(store_dir)
-    root = markdown_to_tree(
-        path.read_text(encoding="utf-8"),
+    root = build_tree_from_file(
+        path,
+        root_id=tree_id or path.stem,
         root_title=title or path.stem,
     )
     return store.save(
